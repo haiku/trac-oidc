@@ -23,6 +23,7 @@ import pytest
 from trac.admin.console import TracAdmin
 from trac.env import open_environment
 from trac.web.main import dispatch_request
+from trac.web.session import DetachedSession
 from webtest import TestApp
 
 from ..authenticator import Authenticator
@@ -164,6 +165,16 @@ def oauth_redirect_url(auth_url):
     return redirect_uri
 
 
+@pytest.fixture
+def link_existing_accounts(env):
+    def set_mode(mode):
+        env.config.set('trac_oidc', 'link_existing_accounts', mode)
+        env.config.save()
+    yield set_mode
+    env.config.set('trac_oidc', 'link_existing_accounts', 'no')
+    env.config.save()
+
+
 def test(test_app, id_token):
     id_token.update({
         'email': 'joe@example.org',
@@ -222,3 +233,76 @@ def test(test_app, id_token):
     resp = test_app.get('/prefs')
     prefs = resp.forms['userprefs']
     assert prefs['name'].value == 'Joseph Blow'
+
+
+def get_accounts_for_subject(env, subject):
+    """Return the names of the accounts associated with an OIDC subject.
+    """
+    rows = env.db_query(
+        "SELECT sid FROM session_attribute"
+        " WHERE authenticated=1 AND name='trac_oidc.subject' AND value=%s",
+        (subject,))
+    return [row[0] for row in rows]
+
+
+def test_link_existing_account(test_app, env, id_token,
+                               link_existing_accounts):
+    # Simulate an account which was created by the AccountManagerPlugin
+    # (or by any other means) before the user logged in via OIDC.
+    username = 'joe-%s' % id_token['sub']
+    ds = DetachedSession(env, username)
+    ds['name'] = 'Joe Bloe'
+    ds['email'] = 'joe@example.org'
+    ds.save()
+
+    id_token.update({
+        'preferred_username': username,
+        'email': 'joe@example.org',
+        'name': 'Joe Bloe',
+        })
+
+    link_existing_accounts('name')
+
+    resp = test_app.get('/prefs')
+    resp = resp.click('^Login .* OpenID Connect$', extra_environ={
+        'HTTP_REFERER': resp.request.url,
+        })
+    resp = test_app.get(oauth_redirect_url(resp.location))
+    resp = resp.follow()
+    assert is_logged_in(resp)
+    # The existing account is used, rather than a new one.
+    subject = 'https://example.net?sub=%s' % id_token['sub']
+    assert get_accounts_for_subject(env, subject) == [username]
+    # The attributes of the existing account are preserved.
+    ds = DetachedSession(env, username)
+    assert ds['name'] == 'Joe Bloe'
+    assert ds['email'] == 'joe@example.org'
+
+
+def test_no_linking_creates_new_account(test_app, env, id_token):
+    # Without the link_existing_accounts option, an account with a
+    # matching name does not prevent a new account from being created.
+    username = 'joe-%s' % id_token['sub']
+    ds = DetachedSession(env, username)
+    ds['name'] = 'Joe Bloe'
+    ds['email'] = 'joe@example.org'
+    ds.save()
+
+    id_token.update({
+        'preferred_username': username,
+        'email': 'joe@example.org',
+        'name': 'Joe Bloe',
+        })
+
+    resp = test_app.get('/prefs')
+    resp = resp.click('^Login .* OpenID Connect$', extra_environ={
+        'HTTP_REFERER': resp.request.url,
+        })
+    resp = test_app.get(oauth_redirect_url(resp.location))
+    resp = resp.follow()
+    assert is_logged_in(resp)
+    subject = 'https://example.net?sub=%s' % id_token['sub']
+    assert get_accounts_for_subject(env, subject) == ['%s (2)' % username]
+    # The pre-existing account is left alone.
+    ds = DetachedSession(env, username)
+    assert ds.get('trac_oidc.subject') is None

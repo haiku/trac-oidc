@@ -194,6 +194,16 @@ class OidcPlugin(Component):
         userdb = self.userdb
         authname = userdb.find_session(id_token)
         if not authname:
+            # There is no authenticated session for the user.  The
+            # identity may be linked to an existing account (e.g. one
+            # managed by the AccountManagerPlugin) with a matching name.
+            authname = userdb.link_session(id_token)
+            if authname:
+                add_notice(req, _(
+                    "Your OpenID Connect account has been linked to your "
+                    "existing Trac account '%(authname)s'.",
+                    authname=authname))
+        if not authname:
             # There is no authenticated session for the user,
             # create a new one
             # XXX: should it be configurable whether this happens?
@@ -366,6 +376,39 @@ class UserDatabase(Component):
     SUBJECT_SKEY = 'trac_oidc.subject'
     IDENTITY_URL_SKEY = 'openid_session_identity_url_data'
 
+    # Names which are reserved by trac itself.
+    RESERVED_AUTHNAMES = ('anonymous', 'authenticated')
+
+    link_existing_accounts = Option(
+        'trac_oidc', 'link_existing_accounts', 'no',
+        """Whether an OpenID Connect identity may be linked to an existing
+        Trac account (e.g. an account managed by the AccountManagerPlugin)
+        whose name is identical to the username supplied by the identity
+        provider.
+
+        One of:
+
+        ``no``
+            Never link.  A new account is created for every identity which
+            is not already associated with a Trac session.  This is the
+            default.
+        ``name``
+            Link to the existing account with the matching name.
+        ``email``
+            Link to the existing account with the matching name, but only
+            if the email address of the identity matches the email address
+            stored for the account.
+
+        .. note::
+
+           Linking by name alone allows anybody who can register an
+           account with the same name at the identity provider to take
+           over the existing Trac account.  The ``email`` mode is safer,
+           but it requires that the provider supplies an email address,
+           and that the email address stored for the Trac account is
+           up to date.
+        """)
+
     def __init__(self):
         self.helper = SessionHelper(self.env)
 
@@ -407,6 +450,95 @@ class UserDatabase(Component):
             "Created new authenticated session for %s with attributes %r",
             authname, attributes)
         return authname
+
+    def link_session(self, id_token):
+        """ Link the identity to an existing account with a matching name.
+
+        The name of the account must be identical to the username
+        provided by the identity provider.  Whether linking is done at
+        all (and under which conditions) is controlled by the
+        ``link_existing_accounts`` option.
+
+        Returns the authname of the account to which the identity was
+        linked, or ``None`` if the identity was not linked to any
+        existing account.
+
+        """
+        mode = (self.link_existing_accounts or 'no').strip().lower()
+        if mode not in ('name', 'email'):
+            if mode != 'no':
+                self.log.error(
+                    "Invalid value %r for the link_existing_accounts option;"
+                    " expected one of 'no', 'name' or 'email'.",
+                    self.link_existing_accounts)
+            return None
+
+        authname = self.preferred_username(id_token)
+        if authname in self.RESERVED_AUTHNAMES:
+            self.log.error(
+                "Not linking the OpenID Connect identity to the account %r: "
+                "that name is reserved by trac.", authname)
+            return None
+        if not self.helper.account_exists(authname):
+            # No account with that name exists (yet).
+            return None
+
+        subject_id = self.subject_uri(id_token['iss'], id_token['sub'])
+        linked_subject = self.helper.get_session_attribute(
+            authname, self.SUBJECT_SKEY)
+        if linked_subject and linked_subject != subject_id:
+            # Never take over an account which is already associated
+            # with a different identity.
+            self.log.error(
+                "Not linking the OpenID Connect identity (%s) to the "
+                "existing account %r: that account is already associated "
+                "with another identity (%s).",
+                subject_id, authname, linked_subject)
+            return None
+
+        if mode == 'email' and not self._email_matches(id_token, authname):
+            return None
+
+        self.associate_session(authname, id_token['iss'], id_token['sub'])
+        self.log.info(
+            "Linked the OpenID Connect identity (%s) to the existing "
+            "account %r.", subject_id, authname)
+        return authname
+
+    def _email_matches(self, id_token, authname):
+        """ Check that the email address of the identity matches the one
+        stored for the account.
+
+        """
+        email = id_token.get('email')
+        if not email:
+            self.log.error(
+                "Not linking the OpenID Connect identity to the existing "
+                "account %r: the identity does not provide an email "
+                "address.", authname)
+            return False
+        verified = id_token.get('email_verified')
+        if verified is not None and str(verified).lower() not in ('true', '1'):
+            self.log.error(
+                "Not linking the OpenID Connect identity to the existing "
+                "account %r: the email address of the identity (%s) is not "
+                "verified.", authname, email)
+            return False
+        account_email = self.helper.get_session_attribute(authname, 'email')
+        if not account_email:
+            self.log.error(
+                "Not linking the OpenID Connect identity to the existing "
+                "account %r: the account does not have an email address.",
+                authname)
+            return False
+        if account_email.strip().lower() != email.strip().lower():
+            self.log.error(
+                "Not linking the OpenID Connect identity to the existing "
+                "account %r: the email address of the identity (%s) does "
+                "not match the email address of the account (%s).",
+                authname, email, account_email)
+            return False
+        return True
 
     def find_session_by_oidc_subject(self, iss, sub):
         subject_id = self.subject_uri(iss, sub)
@@ -502,6 +634,41 @@ class SessionHelper(Component):
                         " ORDER BY session.last_visit DESC",
                         (1, attr_name, attr_value))
         return [row[0] for row in rows]
+
+    def session_exists(self, authname):
+        """ Return True if an authenticated session with this sid exists.
+
+        """
+        for _ in db_query(self.env,
+                          "SELECT 1 FROM session"
+                          " WHERE sid=%s AND authenticated=1",
+                          (authname,)):
+            return True
+        return False
+
+    def account_exists(self, authname):
+        """ Return True if an account with this name already exists.
+
+        An account is either an authenticated session with the given
+        session id, or a name which has been granted permissions.
+
+        """
+        return (self.session_exists(authname)
+                or self.permission_exists_for(authname))
+
+    def get_session_attribute(self, authname, attr_name):
+        """ Return the value of an attribute of an authenticated session.
+
+        Returns ``None`` if the session does not exist, or if it does not
+        have such an attribute.
+
+        """
+        for row in db_query(self.env,
+                            "SELECT value FROM session_attribute"
+                            " WHERE sid=%s AND authenticated=1 AND name=%s",
+                            (authname, attr_name)):
+            return row[0]
+        return None
 
     def create_session(self, authname_base, attributes):
         """Create a new authenticated session.

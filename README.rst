@@ -146,6 +146,11 @@ In your ``trac.ini``::
   # environment (i.e. alongside ``trac.ini``.)
   # client_secret_file = /path/to/client_secret.json
 
+  # Optional: link an OpenID Connect identity to an existing Trac
+  # account with the same name.  See "Linking to existing accounts"
+  # below.  The default is ``no``.
+  # link_existing_accounts = email
+
   [openid]
 
   # Optional: This only matters if you would like to migrate
@@ -175,6 +180,73 @@ their Keycloak username.
 
    The ``client_secret`` is stored in ``trac.ini`` in plain text.
    Restrict access to the ``conf`` directory accordingly.
+
+****************************
+Linking to existing accounts
+****************************
+
+By default, every OpenID Connect identity gets its own Trac account.
+If the provider supplies a ``preferred_username`` which is identical to
+the name of an account that already exists in Trac — for instance an
+account managed by the AccountManagerPlugin_ — then a *second* account
+is created, with a suffix (e.g. ``joe`` and ``joe (2)``).  The new
+account does not inherit the permissions, the properties or the ticket
+history of the existing one.
+
+The ``link_existing_accounts`` option changes this behavior.  When it
+is enabled, and the name of the identity is identical to the name of an
+existing account, the OpenID Connect identity is associated with that
+existing account instead of a new one being created.  The association
+is remembered, so subsequent logins use the same account.
+
+The option takes one of the following values:
+
+``no``
+   Never link.  This is the default.
+
+``name``
+   Link to the existing account with the same name.
+
+``email``
+   Link to the existing account with the same name, but only if the
+   email address of the identity matches the email address stored for
+   the account.
+
+For example::
+
+  [trac_oidc]
+  link_existing_accounts = email
+
+.. note::
+
+   Linking by name alone is a security risk: anybody who is able to
+   register an account with the same name at the identity provider
+   takes over the existing Trac account.  This is only acceptable if
+   the identity provider is strictly managed (i.e. if users cannot
+   register accounts themselves).  The ``email`` mode is safer, but it
+   requires that the provider supplies a verified email address, and
+   that the email address stored for the Trac account is up to date.
+
+Some further details:
+
+* The name of the account must be *identical* to the username
+  supplied by the provider.  The comparison is case-sensitive.
+
+* An account which is already associated with a *different* OpenID
+  Connect identity is never linked to.  An error is logged instead.
+
+* The attributes of the existing account (e.g. its name and email
+  address) are left alone.  They may still be administered by the
+  AccountManagerPlugin.
+
+* If no account with a matching name exists, a new one is created, as
+  usual.
+
+* Users who logged in *before* the option was enabled keep using the
+  account which was created for them back then (e.g. ``joe (2)``).  To
+  move such a user over to the pre-existing account, remove the
+  ``trac_oidc.subject`` session attribute from their account; the next
+  login will then link them to the account with the matching name.
 
 *****************************
 Migration from TracAuthOpenId
@@ -208,6 +280,12 @@ Integrate with AccountManagerPlugin
 I’m not sure exactly what’s involved, but it would be nice if the
 AccountManagerPlugin_ could be used to administer associations between
 OIDC subject identifiers and authenticated sessions, etc.
+
+Note that the ``link_existing_accounts`` option (see `Linking to existing
+accounts`_) allows an OpenID Connect identity to take over an account
+managed by the AccountManagerPlugin_.  Since the AccountManagerPlugin
+stores its accounts as trac sessions, the association is made by adding
+the ``trac_oidc.subject`` session attribute to the existing session.
 
 .. _AccountManagerPlugin: https://trac-hacks.org/wiki/AccountManagerPlugin
 

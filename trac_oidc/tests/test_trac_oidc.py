@@ -225,8 +225,20 @@ class TestOidcPlugin(object):
     def test_find_or_create_session_creates_new(self, plugin, req, userdb):
         id_token = {}
         userdb.find_session.return_value = None
+        userdb.link_session.return_value = None
         authname = userdb.create_session.return_value
         assert plugin._find_or_create_session(req, id_token) == authname
+        assert "has been created" in req.chrome['notices'][0]
+
+    def test_find_or_create_session_links_existing(self, plugin, req, userdb):
+        id_token = {}
+        userdb.find_session.return_value = None
+        userdb.link_session.return_value = 'joe'
+        userdb.create_session.return_value = 'joe (2)'
+        assert plugin._find_or_create_session(req, id_token) == 'joe'
+        assert not userdb.create_session.called
+        assert "linked to your existing Trac account 'joe'" in \
+            req.chrome['notices'][0]
 
     def test_remember_user(self, plugin, req, login_manager):
         plugin._remember_user(req, 'someuser')
@@ -460,6 +472,153 @@ class TestUserDatabase(object):
             ]
         assert authname == helper.create_session.return_value
 
+    @pytest.fixture
+    def existing_account(self, env):
+        """An account as it would be created by the AccountManagerPlugin.
+        """
+        ds = DetachedSession(env, 'joe')
+        ds['name'] = 'Joe'
+        ds['email'] = 'joe@example.net'
+        ds.save()
+        return 'joe'
+
+    @pytest.fixture
+    def link_mode(self, env):
+        def set_mode(mode):
+            env.config.set('trac_oidc', 'link_existing_accounts', mode)
+        return set_mode
+
+    def test_link_session_disabled(self, env, userdb, existing_account,
+                                   link_mode):
+        link_mode('no')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'joe',
+                    'email': 'joe@example.net',
+                    }
+        assert userdb.link_session(id_token) is None
+        ds = DetachedSession(env, 'joe')
+        assert ds.get('trac_oidc.subject') is None
+
+    def test_link_session_by_name(self, env, userdb, existing_account,
+                                  link_mode):
+        link_mode('name')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'joe',
+                    'email': 'joe@example.net',
+                    }
+        assert userdb.link_session(id_token) == 'joe'
+        ds = DetachedSession(env, 'joe')
+        assert ds['trac_oidc.subject'] == 'https://example.net?sub=42'
+        # The other attributes of the account are left alone.
+        assert ds['email'] == 'joe@example.net'
+
+    def test_link_session_by_name_no_such_account(self, env, userdb,
+                                                  link_mode):
+        link_mode('name')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'nobody',
+                    'email': 'nobody@example.net',
+                    }
+        assert userdb.link_session(id_token) is None
+        assert DetachedSession(env, 'nobody').get('trac_oidc.subject') is None
+
+    def test_link_session_by_name_account_with_permission(self, env, userdb,
+                                                           link_mode):
+        link_mode('name')
+        PermissionSystem(env).grant_permission('joe', 'TRAC_ADMIN')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'joe',
+                    }
+        assert userdb.link_session(id_token) == 'joe'
+        ds = DetachedSession(env, 'joe')
+        assert ds['trac_oidc.subject'] == 'https://example.net?sub=42'
+
+    def test_link_session_refuses_account_linked_to_other_identity(
+            self, env, userdb, existing_account, link_mode):
+        link_mode('name')
+        userdb.associate_session('joe', 'https://example.net', '99')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'joe',
+                    }
+        assert userdb.link_session(id_token) is None
+        ds = DetachedSession(env, 'joe')
+        assert ds['trac_oidc.subject'] == 'https://example.net?sub=99'
+
+    def test_link_session_by_email(self, env, userdb, existing_account,
+                                   link_mode):
+        link_mode('email')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'joe',
+                    'email': 'joe@example.net',
+                    }
+        assert userdb.link_session(id_token) == 'joe'
+        ds = DetachedSession(env, 'joe')
+        assert ds['trac_oidc.subject'] == 'https://example.net?sub=42'
+
+    def test_link_session_by_email_mismatch(self, env, userdb,
+                                            existing_account, link_mode):
+        link_mode('email')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'joe',
+                    'email': 'attacker@example.net',
+                    }
+        assert userdb.link_session(id_token) is None
+        ds = DetachedSession(env, 'joe')
+        assert ds.get('trac_oidc.subject') is None
+
+    def test_link_session_by_email_unverified(self, env, userdb,
+                                              existing_account, link_mode):
+        link_mode('email')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'joe',
+                    'email': 'joe@example.net',
+                    'email_verified': False,
+                    }
+        assert userdb.link_session(id_token) is None
+        ds = DetachedSession(env, 'joe')
+        assert ds.get('trac_oidc.subject') is None
+
+    def test_link_session_by_email_no_email(self, env, userdb,
+                                            existing_account, link_mode):
+        link_mode('email')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'joe',
+                    }
+        assert userdb.link_session(id_token) is None
+        ds = DetachedSession(env, 'joe')
+        assert ds.get('trac_oidc.subject') is None
+
+    def test_link_session_by_email_no_account_email(self, env, userdb,
+                                                     link_mode):
+        link_mode('email')
+        ds = DetachedSession(env, 'joe')
+        ds['name'] = 'Joe'
+        ds.save()
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'joe',
+                    'email': 'joe@example.net',
+                    }
+        assert userdb.link_session(id_token) is None
+        ds = DetachedSession(env, 'joe')
+        assert ds.get('trac_oidc.subject') is None
+
+    def test_link_session_invalid_mode(self, env, userdb, existing_account,
+                                       link_mode):
+        link_mode('maybe')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'joe',
+                    }
+        assert userdb.link_session(id_token) is None
+        ds = DetachedSession(env, 'joe')
+        assert ds.get('trac_oidc.subject') is None
+
+    def test_link_session_reserved_name(self, env, userdb, link_mode):
+        link_mode('name')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'anonymous',
+                    }
+        assert userdb.link_session(id_token) is None
+
     def test_find_session_by_oidc_subject(self, userdb, helper, caplog):
         helper.find_session_by_attr.return_value = ['user1', 'user2']
         assert userdb.find_session_by_oidc_subject('iss', 'sub') == 'user1'
@@ -571,6 +730,32 @@ class TestSessionHelper(object):
         assert sid == 'foo'
         ds = DetachedSession(env, 'foo')
         assert ds['name'] == 'Joe'
+
+    def test_session_exists(self, env, helper):
+        assert not helper.session_exists('foo')
+        ds = DetachedSession(env, 'foo')
+        ds['name'] = 'Joe'
+        ds.save()
+        assert helper.session_exists('foo')
+        assert not helper.session_exists('bar')
+
+    def test_account_exists(self, env, helper):
+        assert not helper.account_exists('foo')
+        PermissionSystem(env).grant_permission('foo', 'TRAC_ADMIN')
+        assert helper.account_exists('foo')
+        ds = DetachedSession(env, 'bar')
+        ds['name'] = 'Joe'
+        ds.save()
+        assert helper.account_exists('bar')
+        assert not helper.account_exists('baz')
+
+    def test_get_session_attribute(self, env, helper):
+        ds = DetachedSession(env, 'foo')
+        ds['bar'] = 'baz'
+        ds.save()
+        assert helper.get_session_attribute('foo', 'bar') == 'baz'
+        assert helper.get_session_attribute('foo', 'nope') is None
+        assert helper.get_session_attribute('nobody', 'bar') is None
 
     def test_create_session_skips_existing(self, helper):
         sid1 = helper.create_session('foo', {'name': 'Joe'})
