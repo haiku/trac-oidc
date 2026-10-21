@@ -6,12 +6,17 @@
 """
 from __future__ import absolute_import
 
-from distutils.version import LooseVersion
+import re
 
 from genshi.builder import tag
 import trac
 from trac.env import Environment
 from trac.util.translation import _
+
+
+def _trac_version(version):
+    """Return a comparable tuple for a trac version string."""
+    return tuple(int(part) for part in re.findall(r'\d+', version)[:3])
 
 
 def _logout_link(href, **kwargs):
@@ -41,7 +46,7 @@ def _logout_form(href, **kwargs):
 
 # Recent versions of trac use a logout form for csrf protection.  If
 # trac.css supports it, we should too.
-LOGOUT_REQUIRES_POST = LooseVersion(trac.__version__) >= '1.0.2'
+LOGOUT_REQUIRES_POST = _trac_version(trac.__version__) >= (1, 0, 2)
 logout_link = _logout_form if LOGOUT_REQUIRES_POST else _logout_link
 
 

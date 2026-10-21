@@ -113,7 +113,7 @@ class Authenticator(object):
             "https://www.googleapis.com/plus/v1/people/me/openIdConnect")
         if resp.status != 200:
             if self.log:
-                self.log.warn(
+                self.log.warning(
                     "Failed to retrieve profile (%d %s): %s",
                     resp.status, resp.reason, content)
             return {}

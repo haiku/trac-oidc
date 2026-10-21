@@ -1,15 +1,11 @@
 ---
 language: python
-sudo: false
+python:
+  - "3.8"
+  - "3.10"
 env:
-  - TOXENV=py26
-  - TOXENV=py27
-  - TOXENV=py26-trac_0.11
-  - TOXENV=py27-trac_0.11
-  - TOXENV=py26-trac_0.12
-  - TOXENV=py27-trac_0.12
-  - TOXENV=py26-trac_dev
-  - TOXENV=py27-trac_dev
+  - TOXENV=trac_1.4
+  - TOXENV=trac_1.6
   - TOXENV=cover
 install:
   - pip install tox

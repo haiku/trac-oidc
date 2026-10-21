@@ -21,7 +21,7 @@ Connect* identifiers is used, so sites which previously used
 to switch to using ``trac-oidc`` without losing track of user’s
 settings and permissions.
 
-This plugin is tested with trac versions 0.11, 0.12, 1.0, and 1.1.
+This plugin requires Python 3 and is tested with trac versions 1.4 and 1.6.
 
 The distribution may be downloaded from PyPI_.
 Development takes place at github_.
@@ -198,5 +198,5 @@ Authors
     https://travis-ci.org/trac-hacks/trac-oidc.svg?branch=master
     :target: https://travis-ci.org/trac-hacks/trac-oidc
 .. |trac versions| image::
-   https://img.shields.io/badge/trac-0.11%2C%200.12%2C%201.0%2C%201.1-blue.svg
+   https://img.shields.io/badge/trac-1.4%2C%201.6-blue.svg
    :target: http://trac.edgewall.org/

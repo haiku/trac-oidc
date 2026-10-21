@@ -6,7 +6,7 @@
 """
 from __future__ import absolute_import
 
-from collections import Mapping
+from collections.abc import Mapping
 
 
 def strings_differ(string1, string2):
@@ -22,6 +22,11 @@ def strings_differ(string1, string2):
     Ripped-off from pyramid.util.
 
     """
+    if isinstance(string1, str):
+        string1 = string1.encode('utf-8')
+    if isinstance(string2, str):
+        string2 = string2.encode('utf-8')
+
     if len(string1) != len(string2):
         return True
 

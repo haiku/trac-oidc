@@ -11,8 +11,7 @@ from __future__ import absolute_import
 from contextlib import contextmanager
 from itertools import chain, count
 import os
-from urllib import urlencode
-from urlparse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from genshi.builder import tag
 from trac.config import BoolOption, PathOption

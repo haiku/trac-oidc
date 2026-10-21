@@ -6,8 +6,9 @@
 """
 from __future__ import absolute_import
 
+from unittest import mock
+
 from bs4 import BeautifulSoup
-import mock
 import pytest
 from trac.core import Component
 from trac.test import EnvironmentStub

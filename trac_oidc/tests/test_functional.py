@@ -7,22 +7,20 @@
 from __future__ import absolute_import
 
 from functools import partial
+from io import StringIO
 from itertools import count
 import json
 import logging
 import os
 import re
 from shutil import rmtree
-from StringIO import StringIO
 import sys
 from tempfile import mkdtemp
-from urllib import urlencode
-from urlparse import parse_qsl, urlsplit
+from unittest import mock
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import pytest
 from trac.admin.console import TracAdmin
-
-import mock
 from trac.env import open_environment
 from trac.web.main import dispatch_request
 from webtest import TestApp
