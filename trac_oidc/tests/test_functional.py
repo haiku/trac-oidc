@@ -64,7 +64,7 @@ def trac_admin(env_path, *commands):
 def env_path(request):
     env_path = mkdtemp(suffix='.env')
     request.addfinalizer(partial(rmtree, env_path))
-    trac_admin(env_path, 'initenv testenv sqlite:db/trac.db svn ""')
+    trac_admin(env_path, 'initenv testenv sqlite:db/trac.db')
 
     # Create dummy client_secret.json
     web_secrets = {

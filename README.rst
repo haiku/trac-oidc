@@ -21,7 +21,7 @@ Connect* identifiers is used, so sites which previously used
 to switch to using ``trac-oidc`` without losing track of user’s
 settings and permissions.
 
-This plugin requires Python 3 and is tested with trac versions 1.4 and 1.6.
+This plugin requires Python 3 and is tested with Trac 1.6.
 
 The distribution may be downloaded from PyPI_.
 Development takes place at github_.

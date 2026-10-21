@@ -457,7 +457,8 @@ class TestSessionHelper(object):
     def test_find_session_by_attr_returns_most_recent(self, env, helper,
                                                       monkeypatch):
         def make_session(sid, last_visit):
-            monkeypatch.setattr("time.time", lambda: last_visit)
+            monkeypatch.setattr("trac.web.session.time_now",
+                                lambda: last_visit)
             ds = DetachedSession(env, sid)
             ds['bar'] = 'baz'
             ds.save()

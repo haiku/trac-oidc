@@ -4,7 +4,6 @@ python:
   - "3.8"
   - "3.10"
 env:
-  - TOXENV=trac_1.4
   - TOXENV=trac_1.6
   - TOXENV=cover
 install:
