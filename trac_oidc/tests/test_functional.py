@@ -156,7 +156,6 @@ def oauth_redirect_url(auth_url):
     """ Simulate Oauth2 authentication.
     """
     params = dict(parse_qsl(urlsplit(auth_url).query))
-    assert params['access_type'] == 'online'
     assert params['response_type'] == 'code'
     assert 'email' in params['scope']
     state = params['state']
@@ -176,7 +175,7 @@ def test(test_app, id_token):
     assert not is_logged_in(resp)
 
     # Initial login
-    resp = resp.click('^Login .* Google$', extra_environ={
+    resp = resp.click('^Login .* OpenID Connect$', extra_environ={
         'HTTP_REFERER': resp.request.url,
         })
     assert resp.status == '302 Found'
@@ -210,7 +209,7 @@ def test(test_app, id_token):
     assert not is_logged_in(resp)
 
     # Log in again
-    resp = resp.click('^Login .* Google$', extra_environ={
+    resp = resp.click('^Login .* OpenID Connect$', extra_environ={
         'HTTP_REFERER': resp.request.url,
         })
     assert resp.status == '302 Found'

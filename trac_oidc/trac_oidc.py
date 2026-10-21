@@ -2,8 +2,8 @@
 #
 # Copyright (C) 2015 Geoffrey T. Dairiki
 #
-""" A plugin to support trac authentication using google's *OpenID
-Connect* provider.
+""" A plugin to support trac authentication using an *OpenID Connect*
+provider (Keycloak, Google, Authentik, ...).
 
 """
 from __future__ import absolute_import
@@ -13,10 +13,10 @@ from itertools import chain, count
 import os
 from urllib.parse import urlencode, urlsplit
 
-from genshi.builder import tag
-from trac.config import BoolOption, PathOption
-from trac.core import implements, Component, ExtensionPoint
+from trac.config import BoolOption, Option, PathOption
+from trac.core import implements, Component, ExtensionPoint, TracError
 from trac.perm import PermissionSystem
+from trac.util.html import tag
 from trac.util.translation import _
 from trac.web.api import IAuthenticator, IRequestHandler
 from trac.web.auth import LoginModule
@@ -28,6 +28,8 @@ from .authenticator import (
     Authenticator,
     AuthenticationError,
     AuthenticationFailed,
+    DEFAULT_SCOPE,
+    client_secrets_from_file,
     )
 from .compat import db_query, is_component_enabled, logout_link
 
@@ -42,8 +44,61 @@ class OidcPlugin(Component):
 
     client_secret_file = PathOption(
         'trac_oidc', 'client_secret_file', 'client_secret.json',
-        """Path to client_secret file.  Relative paths are interpreted
-        relative to the ``conf`` subdirectory of the trac environment.""")
+        """Path to a Google-style ``client_secret.json`` file.  Relative
+        paths are interpreted relative to the ``conf`` subdirectory of
+        the trac environment.  This is only needed for backwards
+        compatibility; Keycloak and other providers can be configured
+        entirely with the options below.""")
+
+    issuer = Option(
+        'trac_oidc', 'issuer', '',
+        """The OpenID Connect issuer URL.  For Keycloak this is the realm
+        URL, e.g. ``https://keycloak.example.com/realms/myrealm``.
+        When set, the provider's discovery document is used to find the
+        authorization, token and userinfo endpoints.""")
+
+    client_id = Option(
+        'trac_oidc', 'client_id', '',
+        """The OIDC client identifier (the *Client ID* in Keycloak).""")
+
+    client_secret = Option(
+        'trac_oidc', 'client_secret', '',
+        """The OIDC client secret (the *Client Secret* in Keycloak).
+        Not required for public clients.""")
+
+    scope = Option(
+        'trac_oidc', 'scope', DEFAULT_SCOPE,
+        """Space-separated list of OIDC scopes to request.""")
+
+    authorization_endpoint = Option(
+        'trac_oidc', 'authorization_endpoint', '',
+        """Explicit authorization endpoint URL.  Normally discovered from
+        ``issuer``; set this only if discovery is not available.""")
+
+    token_endpoint = Option(
+        'trac_oidc', 'token_endpoint', '',
+        """Explicit token endpoint URL.  Normally discovered from
+        ``issuer``; set this only if discovery is not available.""")
+
+    userinfo_endpoint = Option(
+        'trac_oidc', 'userinfo_endpoint', '',
+        """Explicit userinfo endpoint URL.  This is used to fill in
+        profile claims which are not present in the id_token.  Normally
+        discovered from ``issuer``.""")
+
+    token_auth_method = Option(
+        'trac_oidc', 'token_auth_method', 'client_secret_post',
+        """How to authenticate to the token endpoint.  One of
+        ``client_secret_post``, ``client_secret_basic`` or ``none``.""")
+
+    login_button_text = Option(
+        'trac_oidc', 'login_button_text', 'Login using OpenID Connect',
+        """Text of the login link shown in the metanav.""")
+
+    openid_realm = Option(
+        'trac_oidc', 'openid_realm', '',
+        """Google-only OpenID 2.0 realm, used when migrating accounts from
+        the TracAuthOpenId plugin.  Leave empty for Keycloak.""")
 
     # deprecated
     absolute_trust_root = BoolOption(
@@ -72,7 +127,7 @@ class OidcPlugin(Component):
 
         if not req.authname or req.authname == 'anonymous':
             # Not logged in, show login link
-            login_link = tag.a(_('Login using Google'),
+            login_link = tag.a(_(self.login_button_text),
                                href=oidc_href('login', return_to=path_qs))
             yield 'metanav', 'trac_oidc.login', login_link
 
@@ -159,13 +214,49 @@ class OidcPlugin(Component):
             lm.forget_user(req)
 
     def _get_authenticator(self, req):
-        conf_dir = os.path.join(self.env.path, 'conf')
-        client_secret_file = os.path.join(conf_dir, self.client_secret_file)
         redirect_url = req.abs_href.trac_oidc('redirect')
+
+        client_id = self.client_id or None
+        client_secret = self.client_secret or None
+        issuer = self.issuer or None
+        authorization_endpoint = self.authorization_endpoint or None
+        token_endpoint = self.token_endpoint or None
+        userinfo_endpoint = self.userinfo_endpoint or None
+
+        # Fall back to the legacy Google-style client_secret.json file
+        # for any values which were not configured explicitly.
+        secret_file = self.client_secret_file
+        if secret_file and os.path.exists(secret_file):
+            secrets = client_secrets_from_file(secret_file)
+            client_id = client_id or secrets['client_id']
+            client_secret = client_secret or secrets['client_secret']
+            issuer = issuer or secrets['issuer']
+            authorization_endpoint = (authorization_endpoint
+                                      or secrets['authorization_endpoint'])
+            token_endpoint = token_endpoint or secrets['token_endpoint']
+            userinfo_endpoint = (userinfo_endpoint
+                                 or secrets['userinfo_endpoint'])
+
+        if not client_id:
+            raise TracError(
+                "OpenID Connect is not configured.  Set [trac_oidc] issuer, "
+                "client_id and client_secret in trac.ini (or provide the "
+                "legacy client_secret_file).")
+
         openid_realm = self._get_openid_realm(req)
-        self.log.debug('openid_realm = %r', openid_realm)
-        return Authenticator(client_secret_file, redirect_url,
-                             openid_realm, self.log)
+        self.log.debug('OIDC issuer = %r, openid_realm = %r',
+                       issuer, openid_realm)
+        return Authenticator(
+            redirect_url, client_id,
+            client_secret=client_secret,
+            issuer=issuer,
+            authorization_endpoint=authorization_endpoint,
+            token_endpoint=token_endpoint,
+            userinfo_endpoint=userinfo_endpoint,
+            scope=self.scope,
+            openid_realm=openid_realm,
+            token_auth_method=self.token_auth_method,
+            log=self.log)
 
     def _get_openid_realm(self, req):
         """ Get the OpenID realm.
@@ -178,6 +269,13 @@ class OidcPlugin(Component):
         as we did using ``TracAuthOpenID``, here we are.
 
         """
+        if self.openid_realm:
+            return self.openid_realm
+        if self.issuer and 'google' not in self.issuer.lower():
+            # The openid.realm parameter is a Google extension.  Do not
+            # send unknown parameters to other providers such as Keycloak.
+            return None
+
         href = req.href()
         abs_href = self.env.abs_href()
         if href and abs_href.endswith(href):
@@ -279,7 +377,10 @@ class UserDatabase(Component):
 
         """
         iss, sub = id_token['iss'], id_token['sub']
-        identity_url = id_token.get('openid_id')
+        # openid_id is a Google-only claim used to migrate accounts
+        # created by TracAuthOpenId.  Avoid triggering a userinfo
+        # request for other providers such as Keycloak.
+        identity_url = id_token.get('openid_id') if 'google' in iss else None
 
         authname = self.find_session_by_oidc_subject(iss, sub)
         if not authname and identity_url:

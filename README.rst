@@ -9,17 +9,16 @@ Description
 ***********
 
 A plugin to support authentication to trac_ using the `OpenID
-Connect`_ protocol.  Currently this probably only works with
-Google_\’s *OpenID Provider*.
+Connect`_ protocol.  It works with any conforming provider, including
+Keycloak_, Authentik_, Dex_, and Google_.
 
-This plugin was written as a partial replacement for the
+The plugin was originally written as a partial replacement for
 TracAuthOpenId_, since Google has (as of mid-June, 2015) `discontinued
-support`_ for authentication using *OpenID 2.0*.
-Google’s extension_ for mapping *OpenID 2.0* identifiers to *OpenID
-Connect* identifiers is used, so sites which previously used
-``TracAuthOpenId`` for authentication against Google *should* be able
-to switch to using ``trac-oidc`` without losing track of user’s
-settings and permissions.
+support`_ for authentication using *OpenID 2.0*.  Google’s extension_
+for mapping *OpenID 2.0* identifiers to *OpenID Connect* identifiers
+is still supported, so sites which previously used ``TracAuthOpenId``
+for authentication against Google *should* be able to switch to using
+``trac-oidc`` without losing track of user’s settings and permissions.
 
 This plugin requires Python 3 and is tested with Trac 1.6.
 
@@ -30,6 +29,9 @@ Development takes place at github_.
 .. _OpenID Connect: http://openid.net/connect/
 .. _trac: http://trac.edgewall.org/
 .. _TracAuthOpenId: https://pypi.python.org/pypi/TracAuthOpenId
+.. _Keycloak: https://www.keycloak.org/
+.. _Authentik: https://goauthentik.io/
+.. _Dex: https://dexidp.io/
 .. _google: https://developers.google.com/identity/protocols/OpenIDConnect
 .. _discontinued support: https://support.google.com/accounts/answer/6206245
 .. _extension:
@@ -41,51 +43,52 @@ Development takes place at github_.
 Usage
 *****
 
-Obtain OAuth 2.0 Credentials
-============================
+Obtain OIDC Credentials
+=======================
 
-You must obtain *OAuth 2.0 credentials* from Google before you can
-use this plugin.
+The *redirect URI* used by this plugin is the base URL of your trac
+followed by ``/trac_oidc/redirect``.  If the top of your trac is at
+``https://trac.example.org``, then the *redirect URI* is
+``https://trac.example.org/trac_oidc/redirect``.  Configure this exact
+URI at your provider.  If trac is reachable under multiple hostnames,
+or under both ``http:`` and ``https:``, you may need to register
+multiple redirect URIs.
 
-1. Go to the `Google Developers Console`_.
+Keycloak
+--------
+
+1. In the Keycloak admin console, select your realm and create (or
+   choose) a client of type **OpenID Connect**.
+
+2. Enable **Client authentication** (this makes it a confidential
+   client) and **Standard flow**.  You do not need any other flows.
+
+3. Under **Valid redirect URIs**, add the redirect URI computed above,
+   for example ``https://trac.example.org/trac_oidc/redirect``.
+
+4. Copy the **Client ID** from the client's **Settings** tab, and the
+   **Client secret** from the **Credentials** tab.
+
+5. The issuer URL is the realm URL, for example
+   ``https://keycloak.example.org/realms/myrealm``.  The plugin fetches
+   ``/.well-known/openid-configuration`` from that URL to discover the
+   authorization, token and userinfo endpoints.
+
+6. Configure the plugin in ``trac.ini`` (see `Configuration`_ below).
+
+Google (legacy)
+---------------
+
+Google can be configured the same way, using
+``issuer = https://accounts.google.com``, or with a downloaded
+``client_secret.json`` file.  To use the file, create *OAuth 2.0
+credentials* in the `Google Developers Console`_, download the JSON
+file, and save it where trac can read it.  By default the plugin looks
+for ``client_secret.json`` in the ``conf`` subdirectory of the trac
+environment.  (Since the file contains sensitive information, consider
+setting its permissions so that not just anybody can read it.)
 
 .. _google developers console: https://console.developers.google.com/
-
-2. Select a project, or create a new one.
-
-3. In the sidebar on the left, expand **APIs & auth**.
-   Next, click **APIs**.
-   Select the **Enabled APIs** link in the API section to see a list
-   of all your enabled APIs.
-
-4. *Optional, but recommended*:
-   Make sure that the **Google+ API** is on the list of enabled APIs.
-   If you have not enabled it, select the API from the list of APIs,
-   then select the Enable API button for the API.  (The Google+ API is
-   used to retrieve the user’s real name on initial sign in.)
-
-5. In the sidebar on the left, select **Credentials**.
-
-6. If you haven't done so already, create your project's
-   OAuth 2.0 credentials by clicking **Create new Client ID**,
-   and providing the information needed to create the credentials.
-
-7. The *redirect URI* used by this plugin is the base url for your trac
-   followed by ``/trac_oidc/redirect``. I.e. if the top of your trac
-   is at ``http://example.org/mytrac``, then the *redirect URI* will
-   be ``http://example.org/mytrac/trac_oidc/redirect``.  If your trac
-   is available under multiple hostnames, or under both ``http:``
-   and ``https:`` schemes, then you may need to configure multiple
-   *redirect URI*\s.
-
-8. When all looks copacetic, click the **Download JSON** button (on
-   the **Credentials** page) to download a JSON file containing the
-   required client secrets.  Save this file to somewhere where trac
-   can read it.  By default, the plugin looks for this file under the
-   name ``client_secret.json`` in the ``conf`` subdirectory of the
-   trac environment, however this can be configured.  (Since the file
-   contains sensitive information, consider setting the file
-   permissions so that not just anybody can read it.)
 
 
 Install the Plugin
@@ -113,23 +116,47 @@ In your ``trac.ini``::
 
   [trac_oidc]
 
-  # Optional: Specify the path to the client secrets JSON file.
+  # The OpenID Connect issuer.  For Keycloak this is the realm URL.
+  issuer = https://keycloak.example.org/realms/myrealm
+
+  # The client credentials from your provider.
+  client_id = trac
+  client_secret = 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0
+
+  # Optional: scopes to request.  The default is shown.
+  scope = openid email profile
+
+  # Optional: text of the login link in the metanav.
+  # login_button_text = Login using Keycloak
+
+  # Optional: how to authenticate to the token endpoint.  Keycloak's
+  # default client authenticator accepts client_secret_post (the
+  # default) and client_secret_basic.
+  # token_auth_method = client_secret_post
+
+  # Optional: explicit endpoint overrides.  Normally these are
+  # discovered from ``issuer`` and should not be needed.
+  # authorization_endpoint = https://keycloak.example.org/realms/myrealm/protocol/openid-connect/auth
+  # token_endpoint = https://keycloak.example.org/realms/myrealm/protocol/openid-connect/token
+  # userinfo_endpoint = https://keycloak.example.org/realms/myrealm/protocol/openid-connect/userinfo
+
+  # Optional, for legacy Google client_secret.json configurations only.
   # The default is ``client_secret.json``.  Relative paths are
   # interpreted relative to the ``conf`` subdirectory of the trac
   # environment (i.e. alongside ``trac.ini``.)
-  client_secret_file = /path/to/client_secret.json
+  # client_secret_file = /path/to/client_secret.json
 
   [openid]
 
   # Optional: This only matters if you would like to migrate
-  # users created by the TracAuthOpenId_ plugin to this one.
+  # users created by the TracAuthOpenId_ plugin to Google's provider.
   # In that case, the OpenID realm must be set to the same value
   # that was used by TracAuthOpenId (where it is called the *trust root*)
   # for the identity URLs to be comparable.
   #
   # If this is set, then the OpenID realm will include just the hostname,
   # otherwise the realm will include the full base path of the trac.
-  # E.g. if you trac is is ``http://example.org:8080/mytrac``, then the realm
+  # E.g. if your trac is ``http://example.org:8080/mytrac``, then the realm
   # will be ``http://example.org:8080/`` if ``absolute_trust_root`` is set
   # and ``http://example.org:8080/mytrac`` if ``absolute_trust_root`` is
   # not set.
@@ -137,6 +164,17 @@ In your ``trac.ini``::
   # The default is ``true``.
   #
   absolute_trust_root = false
+
+The login name used by trac is taken from the ``preferred_username``
+claim, falling back to ``email``, then ``name``, and finally the
+provider's subject identifier.  Keycloak supplies ``preferred_username``
+when the ``profile`` scope is requested, so users normally log in with
+their Keycloak username.
+
+.. note::
+
+   The ``client_secret`` is stored in ``trac.ini`` in plain text.
+   Restrict access to the ``conf`` directory accordingly.
 
 *****************************
 Migration from TracAuthOpenId
@@ -163,15 +201,6 @@ To Do
 *****
 
 Possible improvements.
-
-Generalize to work with more providers
-======================================
-
-Though, currently, only authentication via Google’s OP is supported,
-it should be straightforward to generalize the plugin to work with other
-*OpenID Connect* providers, and other authentication services based on
-*OAuth 2.0* (e.g. Twitter, Facebook.)
-
 
 Integrate with AccountManagerPlugin
 ===================================

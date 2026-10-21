@@ -8,9 +8,9 @@ from __future__ import absolute_import
 
 import re
 
-from genshi.builder import tag
 import trac
 from trac.env import Environment
+from trac.util.html import tag
 from trac.util.translation import _
 
 

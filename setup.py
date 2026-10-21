@@ -14,8 +14,6 @@ with open(os.path.join(here, 'README.rst'), encoding='utf-8') as fp:
 
 requires = [
     'trac',
-    'genshi',
-    'oauth2client',
     ]
 
 tests_require = [

@@ -8,6 +8,7 @@ from __future__ import absolute_import
 
 from io import BytesIO
 from itertools import islice
+import json
 from unittest import mock       # FIXME: use trac.test.Mock?
 from urllib.parse import urlencode
 
@@ -131,9 +132,16 @@ class TestOidcPlugin(object):
         category, name, text = items[0]
         assert category == 'metanav'
         assert name == 'trac_oidc.login'
-        assert 'Login using Google' in str(text)
+        assert 'Login using OpenID Connect' in str(text)
         assert '/trac_oidc/login' in str(text)
         assert '/trac_oidc/login?return_to=%2Ffoo%3Fq%3Dbar' in str(text)
+
+    def test_get_navigation_items_custom_login_text(self, plugin, req):
+        plugin.config.set('trac_oidc', 'login_button_text',
+                          'Login using Keycloak')
+        req.authname = 'anonymous'
+        items = list(plugin.get_navigation_items(req))
+        assert 'Login using Keycloak' in str(items[0][2])
 
     def test_get_navigation_items_logged_in(self, env, plugin, req):
         plugin.show_logout_link = True
@@ -234,13 +242,90 @@ class TestOidcPlugin(object):
         Authenticator = mock.Mock()
         monkeypatch.setattr(trac_oidc, 'Authenticator', Authenticator)
         plugin.config.set('trac_oidc', 'client_secret_file', '/secrets.json')
+        plugin.config.set('trac_oidc', 'issuer',
+                          'https://accounts.google.com')
+        plugin.config.set('trac_oidc', 'client_id', 'ID')
+        plugin.config.set('trac_oidc', 'client_secret', 'SEKRET')
         redirect_url = 'http://example.org/trac.cgi/trac_oidc/redirect'
         openid_realm = 'http://example.org/'
         authenticator = plugin._get_authenticator(req)
         assert authenticator is Authenticator.return_value
         assert Authenticator.mock_calls == [
-            mock.call('/secrets.json', redirect_url, openid_realm, plugin.log),
+            mock.call(
+                redirect_url, 'ID',
+                client_secret='SEKRET',
+                issuer='https://accounts.google.com',
+                authorization_endpoint=None,
+                token_endpoint=None,
+                userinfo_endpoint=None,
+                scope='openid email profile',
+                openid_realm=openid_realm,
+                token_auth_method='client_secret_post',
+                log=plugin.log),
             ]
+
+    def test_get_authenticator_keycloak(self, plugin, req, monkeypatch):
+        from .. import trac_oidc
+        Authenticator = mock.Mock()
+        monkeypatch.setattr(trac_oidc, 'Authenticator', Authenticator)
+        plugin.config.set('trac_oidc', 'client_secret_file', '/secrets.json')
+        plugin.config.set('trac_oidc', 'issuer',
+                          'https://keycloak.example.com/realms/trac')
+        plugin.config.set('trac_oidc', 'client_id', 'trac')
+        plugin.config.set('trac_oidc', 'client_secret', 'SEKRET')
+        plugin.config.set('trac_oidc', 'scope', 'openid profile email')
+        plugin.config.set('trac_oidc', 'token_auth_method',
+                          'client_secret_basic')
+        plugin._get_authenticator(req)
+        assert Authenticator.mock_calls == [
+            mock.call(
+                'http://example.org/trac.cgi/trac_oidc/redirect', 'trac',
+                client_secret='SEKRET',
+                issuer='https://keycloak.example.com/realms/trac',
+                authorization_endpoint=None,
+                token_endpoint=None,
+                userinfo_endpoint=None,
+                scope='openid profile email',
+                openid_realm=None,
+                token_auth_method='client_secret_basic',
+                log=plugin.log),
+            ]
+
+    def test_get_authenticator_from_client_secret_file(
+            self, plugin, req, monkeypatch, tmp_path):
+        from .. import trac_oidc
+        Authenticator = mock.Mock()
+        monkeypatch.setattr(trac_oidc, 'Authenticator', Authenticator)
+        secret_file = str(tmp_path / 'client_secret.json')
+        plugin.config.set('trac_oidc', 'client_secret_file', secret_file)
+        with open(secret_file, 'w') as fp:
+            json.dump({'web': {
+                'auth_uri': 'https://accounts.example.com/auth',
+                'token_uri': 'https://accounts.example.com/token',
+                'client_id': 'ID',
+                'client_secret': 'SEKRET',
+                }}, fp)
+        plugin._get_authenticator(req)
+        assert Authenticator.mock_calls == [
+            mock.call(
+                'http://example.org/trac.cgi/trac_oidc/redirect', 'ID',
+                client_secret='SEKRET',
+                issuer=None,
+                authorization_endpoint='https://accounts.example.com/auth',
+                token_endpoint='https://accounts.example.com/token',
+                userinfo_endpoint=None,
+                scope='openid email profile',
+                openid_realm='http://example.org/',
+                token_auth_method='client_secret_post',
+                log=plugin.log),
+            ]
+
+    def test_get_authenticator_unconfigured(self, plugin, req):
+        from trac.core import TracError
+        plugin.config.set('trac_oidc', 'client_secret_file',
+                          '/nonexistent/client_secret.json')
+        with pytest.raises(TracError):
+            plugin._get_authenticator(req)
 
     def test_get_openid_realm(self, plugin, req):
         assert plugin._get_openid_realm(req) == 'http://example.org/'
@@ -248,6 +333,16 @@ class TestOidcPlugin(object):
     def test_get_openid_realm_no_absolute_trust_root(self, env, plugin, req):
         env.config.set('openid', 'absolute_trust_root', 'false')
         assert plugin._get_openid_realm(req) == 'http://example.org/trac.cgi'
+
+    def test_get_openid_realm_explicit(self, plugin, req):
+        plugin.config.set('trac_oidc', 'openid_realm',
+                          'https://example.org/realm')
+        assert plugin._get_openid_realm(req) == 'https://example.org/realm'
+
+    def test_get_openid_realm_not_google(self, plugin, req):
+        plugin.config.set('trac_oidc', 'issuer',
+                          'https://keycloak.example.com/realms/trac')
+        assert plugin._get_openid_realm(req) is None
 
     @pytest.mark.parametrize('return_to', [
         '/foo?bar=baz',
@@ -333,8 +428,8 @@ class TestUserDatabase(object):
         assert sid == 'foo'
 
     def test_find_session_by_identity_url(self, env, userdb):
-        bare_id_token = {'iss': 'https://example.net', 'sub': '42'}
-        id_token = {'iss': 'https://example.net', 'sub': '42',
+        bare_id_token = {'iss': 'https://accounts.google.com', 'sub': '42'}
+        id_token = {'iss': 'https://accounts.google.com', 'sub': '42',
                     'openid_id': 'https://example.org/foo'}
         ds = DetachedSession(env, 'bar')
         ds['openid_session_identity_url_data'] = 'https://example.org/foo'
