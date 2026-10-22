@@ -13,6 +13,7 @@ from itertools import chain, count
 import os
 from urllib.parse import urlencode, urlsplit
 
+from trac.admin.api import IAdminPanelProvider
 from trac.config import BoolOption, Option, PathOption
 from trac.core import implements, Component, ExtensionPoint, TracError
 from trac.perm import PermissionSystem
@@ -20,7 +21,8 @@ from trac.util.html import tag
 from trac.util.translation import _
 from trac.web.api import IAuthenticator, IRequestHandler
 from trac.web.auth import LoginModule
-from trac.web.chrome import add_notice, add_warning, INavigationContributor
+from trac.web.chrome import (add_notice, add_warning, INavigationContributor,
+                             ITemplateProvider)
 from trac.web.session import DetachedSession
 
 from .api import ILoginManager
@@ -332,6 +334,62 @@ class OidcPlugin(Component):
         if query:
             return_url += '?' + query
         return return_url
+
+
+class TracOidcAdminPanel(Component):
+    """Administration panel for aligning Trac and OIDC email addresses."""
+
+    implements(IAdminPanelProvider, ITemplateProvider)
+
+    def __init__(self):
+        self.helper = SessionHelper(self.env)
+
+    # IAdminPanelProvider methods
+
+    def get_admin_panels(self, req):
+        if 'TRAC_ADMIN' in req.perm('admin', 'trac_oidc/email'):
+            yield ('trac_oidc', _("TracOIDC"), 'email',
+                   _("Align User Email Addresses"))
+
+    def render_admin_panel(self, req, cat, page, path_info):
+        req.perm(cat, page).require('TRAC_ADMIN')
+
+        username = ''
+        new_email = ''
+        if req.method == 'POST':
+            username = (req.args.get('username') or '').strip()
+            new_email = (req.args.get('email') or '').strip()
+            if not username:
+                add_warning(req, _("Username is required."))
+            elif not new_email:
+                add_warning(req, _("New email address is required."))
+            elif not self.helper.account_exists(username):
+                add_warning(req, _("User '%(username)s' does not exist.",
+                                   username=username))
+            else:
+                ds = DetachedSession(self.env, username)
+                ds['email'] = new_email
+                ds.save()
+                self.log.info(
+                    "Administrator %s changed the email address of %r to %s",
+                    req.authname, username, new_email)
+                add_notice(req, _(
+                    "Email address for '%(username)s' updated to "
+                    "'%(email)s'.", username=username, email=new_email))
+                req.redirect(req.href.admin(cat, page))
+
+        return 'admin_trac_oidc.html', {
+            'username': username,
+            'new_email': new_email,
+            }
+
+    # ITemplateProvider methods
+
+    def get_htdocs_dirs(self):
+        return []
+
+    def get_templates_dirs(self):
+        return [os.path.join(os.path.dirname(__file__), 'templates')]
 
 
 class AuthCookieManager(LoginModule):

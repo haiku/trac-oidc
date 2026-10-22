@@ -45,7 +45,8 @@ setup(
 
     packages=['trac_oidc'],
     include_package_data=True,
-    zip_safe=True,
+    package_data={'trac_oidc': ['templates/*.html']},
+    zip_safe=False,
 
     install_requires=requires,
     python_requires='>=3.6',

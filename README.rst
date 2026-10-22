@@ -275,6 +275,19 @@ Some further details:
   ``trac_oidc.subject`` session attribute from their account; the next
   login will then link them to the account with the matching name.
 
+************************
+Aligning email addresses
+************************
+
+Administrators can manually set the email address stored for a Trac
+account from the web administration interface, under **Admin → TracOIDC
+→ Align User Email Addresses**.  Enter the Trac *Username* and the *New
+Email* address and submit the form.  The change is applied immediately.
+
+This is useful when an email address needs to be corrected so that it
+matches the address supplied by the identity provider.  The panel
+requires the ``TRAC_ADMIN`` permission.
+
 *****************************
 Migration from TracAuthOpenId
 *****************************

@@ -9,12 +9,13 @@ from __future__ import absolute_import
 from io import BytesIO
 from itertools import islice
 import json
+import os
 from unittest import mock       # FIXME: use trac.test.Mock?
 from urllib.parse import urlencode
 
 import pytest
 from trac.core import implements, Component
-from trac.perm import PermissionSystem
+from trac.perm import PermissionCache, PermissionSystem
 from trac.test import EnvironmentStub
 from trac.web.api import Request
 from trac.web.session import DetachedSession
@@ -381,6 +382,87 @@ class TestOidcPlugin(object):
         base = 'http://example.org/trac.cgi'
         req = dummy_request(env, query={'return_to': return_to})
         assert plugin._get_return_url(req) == base
+
+
+class TestTracOidcAdminPanel(object):
+    @pytest.fixture
+    def panel(self, env):
+        from ..trac_oidc import TracOidcAdminPanel
+        return TracOidcAdminPanel(env)
+
+    @pytest.fixture
+    def admin_req(self, env):
+        PermissionSystem(env).grant_permission('admin', 'TRAC_ADMIN')
+        req = dummy_request(env)
+        req.authname = 'admin'
+        req.perm = PermissionCache(env, 'admin')
+        return req
+
+    def test_get_admin_panels_requires_permission(self, panel, req):
+        req.perm = PermissionCache(panel.env, 'anonymous')
+        assert list(panel.get_admin_panels(req)) == []
+
+    def test_get_admin_panels(self, panel, admin_req):
+        assert list(panel.get_admin_panels(admin_req)) == [
+            ('trac_oidc', 'TracOIDC', 'email',
+             'Align User Email Addresses'),
+            ]
+
+    def test_render_admin_panel(self, panel, admin_req):
+        template, data = panel.render_admin_panel(
+            admin_req, 'trac_oidc', 'email', None)
+        assert template == 'admin_trac_oidc.html'
+        assert data == {'username': '', 'new_email': ''}
+
+    def test_render_admin_panel_updates_email(self, env, panel, admin_req):
+        ds = DetachedSession(env, 'joe')
+        ds['name'] = 'Joe'
+        ds['email'] = 'old@example.org'
+        ds.save()
+
+        admin_req.environ['REQUEST_METHOD'] = 'POST'
+        admin_req.args = {'username': ' joe ',
+                          'email': ' new@example.org '}
+        template, data = panel.render_admin_panel(
+            admin_req, 'trac_oidc', 'email', None)
+
+        assert DetachedSession(env, 'joe')['email'] == 'new@example.org'
+        assert admin_req.redirect.mock_calls == [
+            mock.call(admin_req.href.admin('trac_oidc', 'email')),
+            ]
+        assert "Email address for 'joe' updated to 'new@example.org'" \
+            in admin_req.chrome['notices'][0]
+        assert data == {'username': 'joe', 'new_email': 'new@example.org'}
+        assert template == 'admin_trac_oidc.html'
+
+    @pytest.mark.parametrize('username, new_email, warning', [
+        ('', 'new@example.org', 'Username is required.'),
+        ('joe', '', 'New email address is required.'),
+        ('nobody', 'new@example.org', "User 'nobody' does not exist."),
+        ])
+    def test_render_admin_panel_validation(self, env, panel, admin_req,
+                                           username, new_email, warning):
+        ds = DetachedSession(env, 'joe')
+        ds['email'] = 'old@example.org'
+        ds.save()
+
+        admin_req.environ['REQUEST_METHOD'] = 'POST'
+        admin_req.args = {'username': username, 'email': new_email}
+        template, data = panel.render_admin_panel(
+            admin_req, 'trac_oidc', 'email', None)
+
+        assert warning in admin_req.chrome['warnings'][0]
+        assert not admin_req.redirect.called
+        assert DetachedSession(env, 'joe')['email'] == 'old@example.org'
+        assert data == {'username': username, 'new_email': new_email}
+
+    def test_get_templates_dirs(self, panel):
+        [templates_dir] = panel.get_templates_dirs()
+        assert os.path.isfile(
+            os.path.join(templates_dir, 'admin_trac_oidc.html'))
+
+    def test_get_htdocs_dirs(self, panel):
+        assert panel.get_htdocs_dirs() == []
 
 
 class TestAuthCookieManager(object):

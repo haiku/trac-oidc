@@ -1,0 +1,46 @@
+# extends 'admin.html'
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>
+      # block admintitle
+      ${_("Align User Email Addresses")}
+      # endblock admintitle
+    </title>
+  </head>
+
+  <body>
+    # block adminpanel
+    <h2>${_("Align User Email Addresses")}</h2>
+
+    <div class="system-message">
+      <p class="system-message-title">
+        ${_("Ensure the user you are fixing owns both email accounts to avoid account takeovers!")}
+      </p>
+    </div>
+
+    <form class="mod" id="modoidcemail" method="post"
+          action="${req.request_path}">
+      ${jmacros.form_token_input()}
+      <fieldset>
+        <legend>${_("Update an email address")}</legend>
+        <div class="field">
+          <label>${_("Username:")}<br />
+            <input type="text" name="username" size="48"
+                   value="${username}" />
+          </label>
+        </div>
+        <div class="field">
+          <label>${_("New Email:")}<br />
+            <input type="text" name="email" size="48"
+                   value="${new_email}" />
+          </label>
+        </div>
+      </fieldset>
+      <div class="buttons">
+        <input type="submit" value="${_('Update Email Address')}" />
+      </div>
+    </form>
+    # endblock adminpanel
+  </body>
+</html>

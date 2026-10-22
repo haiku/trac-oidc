@@ -1,2 +1,3 @@
 include LICENSE.txt README.rst
+include trac_oidc/templates/*.html
 exclude .gitignore

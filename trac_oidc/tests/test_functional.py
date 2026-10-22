@@ -22,6 +22,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 import pytest
 from trac.admin.console import TracAdmin
 from trac.env import open_environment
+from trac.perm import PermissionSystem
 from trac.web.main import dispatch_request
 from trac.web.session import DetachedSession
 from webtest import TestApp
@@ -381,3 +382,33 @@ def test_no_linking_refuses_duplicate_account(test_app, env, id_token,
     assert get_accounts_for_subject(env, subject) == []
     ds = DetachedSession(env, username)
     assert ds.get('trac_oidc.subject') is None
+
+
+def test_admin_align_email(test_app, env):
+    permissions = PermissionSystem(env)
+    username = 'admin-email-test'
+    permissions.grant_permission('anonymous', 'TRAC_ADMIN')
+    try:
+        ds = DetachedSession(env, username)
+        ds['name'] = 'Admin Email Test'
+        ds['email'] = 'old@example.org'
+        ds.save()
+
+        resp = test_app.get('/admin/trac_oidc/email')
+        assert resp.status_int == 200
+        assert 'Align User Email Addresses' in resp.text
+        assert ('Ensure the user you are fixing owns both email accounts '
+                'to avoid account takeovers!') in resp.text
+
+        form = resp.forms['modoidcemail']
+        assert form['username'].value == ''
+        assert form['email'].value == ''
+        form['username'] = username
+        form['email'] = 'new@example.org'
+        resp = form.submit().follow()
+        assert resp.status_int == 200
+        assert "Email address for '%s' updated to 'new@example.org'" \
+            % username in resp.text
+        assert DetachedSession(env, username)['email'] == 'new@example.org'
+    finally:
+        permissions.revoke_permission('anonymous', 'TRAC_ADMIN')
