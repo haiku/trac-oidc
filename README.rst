@@ -210,7 +210,10 @@ The option takes one of the following values:
 ``email``
    Link to the existing account with the same name, but only if the
    email address of the identity matches the email address stored for
-   the account.
+   the account.  The identity provider must also assert that the email
+   address is verified, using the ``email_verified`` claim.  An identity
+   whose provider does not state whether the address is verified is
+   never linked.
 
 For example::
 
@@ -226,6 +229,12 @@ For example::
    register accounts themselves).  The ``email`` mode is safer, but it
    requires that the provider supplies a verified email address, and
    that the email address stored for the Trac account is up to date.
+
+   The ``email_verified`` claim is optional in OpenID Connect, so some
+   providers do not supply it.  In the ``email`` mode such an identity is
+   never linked, because the verification status of its email address is
+   unknown.  A provider may supply the claim in the *userinfo* response
+   rather than in the *id_token*; either is accepted.
 
 Some further details:
 

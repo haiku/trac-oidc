@@ -397,7 +397,10 @@ class UserDatabase(Component):
         ``email``
             Link to the existing account with the matching name, but only
             if the email address of the identity matches the email address
-            stored for the account.
+            stored for the account.  The identity provider must also
+            assert that the email address is verified, by means of the
+            ``email_verified`` claim.  An identity whose provider does not
+            state whether the address is verified is never linked.
 
         .. note::
 
@@ -405,8 +408,9 @@ class UserDatabase(Component):
            account with the same name at the identity provider to take
            over the existing Trac account.  The ``email`` mode is safer,
            but it requires that the provider supplies an email address,
-           and that the email address stored for the Trac account is
-           up to date.
+           that the provider asserts that the address is verified, and
+           that the email address stored for the Trac account is up to
+           date.
         """)
 
     def __init__(self):
@@ -518,7 +522,17 @@ class UserDatabase(Component):
                 "address.", authname)
             return False
         verified = id_token.get('email_verified')
-        if verified is not None and str(verified).lower() not in ('true', '1'):
+        if verified is None:
+            # The provider did not tell us whether the email address is
+            # verified.  Per OpenID Connect Core 5.1.1 the value is
+            # unknown in that case, so the address must not be treated as
+            # verified.
+            self.log.error(
+                "Not linking the OpenID Connect identity to the existing "
+                "account %r: the identity does not state whether its email "
+                "address (%s) is verified.", authname, email)
+            return False
+        if str(verified).lower() not in ('true', '1'):
             self.log.error(
                 "Not linking the OpenID Connect identity to the existing "
                 "account %r: the email address of the identity (%s) is not "

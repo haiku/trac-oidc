@@ -550,6 +550,27 @@ class TestUserDatabase(object):
         id_token = {'iss': 'https://example.net', 'sub': '42',
                     'preferred_username': 'joe',
                     'email': 'joe@example.net',
+                    'email_verified': True,
+                    }
+        assert userdb.link_session(id_token) == 'joe'
+        ds = DetachedSession(env, 'joe')
+        assert ds['trac_oidc.subject'] == 'https://example.net?sub=42'
+
+    @pytest.mark.parametrize('email_verified', [
+        'true',
+        'True',
+        1,
+        ])
+    def test_link_session_by_email_verified(self, env, userdb,
+                                            existing_account, link_mode,
+                                            email_verified):
+        """A provider which asserts that the address is verified is
+        accepted, however the claim is spelled."""
+        link_mode('email')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'joe',
+                    'email': 'joe@example.net',
+                    'email_verified': email_verified,
                     }
         assert userdb.link_session(id_token) == 'joe'
         ds = DetachedSession(env, 'joe')
@@ -561,18 +582,45 @@ class TestUserDatabase(object):
         id_token = {'iss': 'https://example.net', 'sub': '42',
                     'preferred_username': 'joe',
                     'email': 'attacker@example.net',
+                    'email_verified': True,
                     }
         assert userdb.link_session(id_token) is None
         ds = DetachedSession(env, 'joe')
         assert ds.get('trac_oidc.subject') is None
 
+    @pytest.mark.parametrize('email_verified', [
+        False,
+        'false',
+        'False',
+        0,
+        ])
     def test_link_session_by_email_unverified(self, env, userdb,
-                                              existing_account, link_mode):
+                                              existing_account, link_mode,
+                                              email_verified):
         link_mode('email')
         id_token = {'iss': 'https://example.net', 'sub': '42',
                     'preferred_username': 'joe',
                     'email': 'joe@example.net',
-                    'email_verified': False,
+                    'email_verified': email_verified,
+                    }
+        assert userdb.link_session(id_token) is None
+        ds = DetachedSession(env, 'joe')
+        assert ds.get('trac_oidc.subject') is None
+
+    def test_link_session_by_email_verification_unknown(self, env, userdb,
+                                                        existing_account,
+                                                        link_mode):
+        """An identity whose provider does not state whether the email
+        address is verified must never be linked.
+
+        The ``email_verified`` claim is optional in OpenID Connect Core
+        5.1.1; if it is omitted, the verification status of the address
+        is unknown and the address must not be trusted.
+        """
+        link_mode('email')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'joe',
+                    'email': 'joe@example.net',
                     }
         assert userdb.link_session(id_token) is None
         ds = DetachedSession(env, 'joe')
@@ -597,6 +645,7 @@ class TestUserDatabase(object):
         id_token = {'iss': 'https://example.net', 'sub': '42',
                     'preferred_username': 'joe',
                     'email': 'joe@example.net',
+                    'email_verified': True,
                     }
         assert userdb.link_session(id_token) is None
         ds = DetachedSession(env, 'joe')
