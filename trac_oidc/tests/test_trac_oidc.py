@@ -435,7 +435,9 @@ class TestTracOidcAdminPanel(object):
     def test_get_admin_panels(self, panel, admin_req):
         assert list(panel.get_admin_panels(admin_req)) == [
             ('trac_oidc', 'TracOIDC', 'email',
-             'Align User Email Addresses'),
+             'Fix Email Address'),
+            ('trac_oidc', 'TracOIDC', 'unlink',
+             'Unlink SSO Identity'),
             ]
 
     def test_render_admin_panel(self, panel, admin_req):
@@ -490,9 +492,72 @@ class TestTracOidcAdminPanel(object):
         [templates_dir] = panel.get_templates_dirs()
         assert os.path.isfile(
             os.path.join(templates_dir, 'admin_trac_oidc.html'))
+        assert os.path.isfile(
+            os.path.join(templates_dir, 'admin_trac_oidc_unlink.html'))
 
     def test_get_htdocs_dirs(self, panel):
         assert panel.get_htdocs_dirs() == []
+
+    def test_render_unlink(self, panel, admin_req):
+        template, data = panel.render_admin_panel(
+            admin_req, 'trac_oidc', 'unlink', None)
+        assert template == 'admin_trac_oidc_unlink.html'
+        assert data == {'username': ''}
+
+    def test_render_unlink_removes_linkage(self, env, panel, admin_req):
+        ds = DetachedSession(env, 'joe')
+        ds['trac_oidc.subject'] = 'https://example.net?sub=42'
+        ds['openid_session_identity_url_data'] = 'https://example.org/old'
+        ds.save()
+
+        admin_req.environ['REQUEST_METHOD'] = 'POST'
+        admin_req.args = {'username': ' joe '}
+        template, data = panel.render_admin_panel(
+            admin_req, 'trac_oidc', 'unlink', None)
+
+        ds = DetachedSession(env, 'joe')
+        assert 'trac_oidc.subject' not in ds
+        # The legacy identity URL is left alone so that the account can
+        # be associated again on the next login.
+        assert ds['openid_session_identity_url_data'] == \
+            'https://example.org/old'
+        assert admin_req.redirect.mock_calls == [
+            mock.call(admin_req.href.admin('trac_oidc', 'unlink')),
+            ]
+        assert "SSO identity unlinked from 'joe'" \
+            in admin_req.chrome['notices'][0]
+        assert data == {'username': 'joe'}
+        assert template == 'admin_trac_oidc_unlink.html'
+
+    @pytest.mark.parametrize('username, warning', [
+        ('', 'Username is required.'),
+        ('nobody', "User 'nobody' does not exist."),
+        ])
+    def test_render_unlink_validation(self, panel, admin_req,
+                                      username, warning):
+        admin_req.environ['REQUEST_METHOD'] = 'POST'
+        admin_req.args = {'username': username}
+        template, data = panel.render_admin_panel(
+            admin_req, 'trac_oidc', 'unlink', None)
+
+        assert warning in admin_req.chrome['warnings'][0]
+        assert not admin_req.redirect.called
+        assert data == {'username': username}
+
+    def test_render_unlink_without_linkage(self, env, panel, admin_req):
+        ds = DetachedSession(env, 'joe')
+        ds['name'] = 'Joe'
+        ds.save()
+
+        admin_req.environ['REQUEST_METHOD'] = 'POST'
+        admin_req.args = {'username': 'joe'}
+        template, data = panel.render_admin_panel(
+            admin_req, 'trac_oidc', 'unlink', None)
+
+        assert "User 'joe' does not have an SSO identity linked." \
+            in admin_req.chrome['warnings'][0]
+        assert not admin_req.redirect.called
+        assert data == {'username': 'joe'}
 
 
 class TestAuthCookieManager(object):

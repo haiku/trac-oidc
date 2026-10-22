@@ -1,0 +1,36 @@
+# extends 'admin.html'
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>
+      # block admintitle
+      ${_("Unlink SSO Identity")}
+      # endblock admintitle
+    </title>
+  </head>
+
+  <body>
+    # block adminpanel
+    <h2>${_("Unlink SSO Identity")}</h2>
+
+    <p>${_("Removing the current association allows the next login to attempt linking the account again.")}</p>
+
+    <form class="mod" id="modoidcunlink" method="post"
+          action="${req.request_path}">
+      ${jmacros.form_token_input()}
+      <fieldset>
+        <legend>${_("Remove an SSO identity linkage")}</legend>
+        <div class="field">
+          <label>${_("Username:")}<br />
+            <input type="text" name="username" size="48"
+                   value="${username}" />
+          </label>
+        </div>
+      </fieldset>
+      <div class="buttons">
+        <input type="submit" value="${_('Unlink SSO Identity')}" />
+      </div>
+    </form>
+    # endblock adminpanel
+  </body>
+</html>

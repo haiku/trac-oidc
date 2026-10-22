@@ -353,7 +353,7 @@ class OidcPlugin(Component):
 
 
 class TracOidcAdminPanel(Component):
-    """Administration panel for aligning Trac and OIDC email addresses."""
+    """Administration panels for managing OIDC account associations."""
 
     implements(IAdminPanelProvider, ITemplateProvider)
 
@@ -365,10 +365,16 @@ class TracOidcAdminPanel(Component):
     def get_admin_panels(self, req):
         if 'TRAC_ADMIN' in req.perm('admin', 'trac_oidc/email'):
             yield ('trac_oidc', _("TracOIDC"), 'email',
-                   _("Align User Email Addresses"))
+                   _("Fix Email Address"))
+        if 'TRAC_ADMIN' in req.perm('admin', 'trac_oidc/unlink'):
+            yield ('trac_oidc', _("TracOIDC"), 'unlink',
+                   _("Unlink SSO Identity"))
 
     def render_admin_panel(self, req, cat, page, path_info):
         req.perm(cat, page).require('TRAC_ADMIN')
+
+        if page == 'unlink':
+            return self._render_unlink(req, cat, page)
 
         username = ''
         new_email = ''
@@ -398,6 +404,35 @@ class TracOidcAdminPanel(Component):
             'username': username,
             'new_email': new_email,
             }
+
+    def _render_unlink(self, req, cat, page):
+        username = ''
+        if req.method == 'POST':
+            username = (req.args.get('username') or '').strip()
+            if not username:
+                add_warning(req, _("Username is required."))
+            elif not self.helper.account_exists(username):
+                add_warning(req, _("User '%(username)s' does not exist.",
+                                   username=username))
+            else:
+                ds = DetachedSession(self.env, username)
+                if UserDatabase.SUBJECT_SKEY in ds:
+                    del ds[UserDatabase.SUBJECT_SKEY]
+                    ds.save()
+                    self.log.info(
+                        "Administrator %s unlinked the SSO identity from %r",
+                        req.authname, username)
+                    add_notice(req, _(
+                        "SSO identity unlinked from '%(username)s'.  The "
+                        "identity will be linked again on the next login if "
+                        "automatic linking is enabled.", username=username))
+                    req.redirect(req.href.admin(cat, page))
+                else:
+                    add_warning(req, _(
+                        "User '%(username)s' does not have an SSO identity "
+                        "linked.", username=username))
+
+        return 'admin_trac_oidc_unlink.html', {'username': username}
 
     # ITemplateProvider methods
 

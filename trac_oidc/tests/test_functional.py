@@ -412,3 +412,55 @@ def test_admin_align_email(test_app, env):
         assert DetachedSession(env, username)['email'] == 'new@example.org'
     finally:
         permissions.revoke_permission('anonymous', 'TRAC_ADMIN')
+
+
+def test_admin_unlink_sso_identity(test_app, env, id_token,
+                                   link_existing_accounts):
+    permissions = PermissionSystem(env)
+    username = 'admin-unlink-test'
+    subject = 'https://example.net?sub=%s' % id_token['sub']
+    permissions.grant_permission('anonymous', 'TRAC_ADMIN')
+    try:
+        ds = DetachedSession(env, username)
+        ds['name'] = 'Admin Unlink Test'
+        ds['email'] = 'user@example.org'
+        ds['trac_oidc.subject'] = subject
+        ds['openid_session_identity_url_data'] = 'https://example.org/old'
+        ds.save()
+
+        id_token.update({
+            'preferred_username': username,
+            'email': 'user@example.org',
+            'email_verified': True,
+            'name': 'Admin Unlink Test',
+            })
+        link_existing_accounts('email')
+
+        resp = test_app.get('/admin/trac_oidc/unlink')
+        assert resp.status_int == 200
+        assert 'Unlink SSO Identity' in resp.text
+
+        form = resp.forms['modoidcunlink']
+        assert form['username'].value == ''
+        form['username'] = username
+        resp = form.submit().follow()
+        assert resp.status_int == 200
+        assert "SSO identity unlinked from '%s'" % username in resp.text
+
+        ds = DetachedSession(env, username)
+        assert 'trac_oidc.subject' not in ds
+        # The legacy identity URL is retained.
+        assert ds['openid_session_identity_url_data'] == \
+            'https://example.org/old'
+
+        # The next login links the identity again automatically.
+        resp = test_app.get('/prefs')
+        resp = resp.click('^Login .* OpenID Connect$', extra_environ={
+            'HTTP_REFERER': resp.request.url,
+            })
+        resp = test_app.get(oauth_redirect_url(resp.location))
+        resp = resp.follow()
+        assert is_logged_in(resp)
+        assert DetachedSession(env, username)['trac_oidc.subject'] == subject
+    finally:
+        permissions.revoke_permission('anonymous', 'TRAC_ADMIN')

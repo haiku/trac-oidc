@@ -293,6 +293,13 @@ This is useful when an email address needs to be corrected so that it
 matches the address supplied by the identity provider.  The panel
 requires the ``TRAC_ADMIN`` permission.
 
+The **Admin → TracOIDC → Unlink SSO Identity** panel removes the SSO
+association from an existing Trac account.  Enter the Trac *Username* and
+submit the form.  This removes the current OIDC subject association, so
+the next login will attempt to link the account again according to the
+``link_existing_accounts`` setting.  It is intended for troubleshooting
+and for retrying a linkage.
+
 *****************************
 Migration from TracAuthOpenId
 *****************************
