@@ -16,6 +16,7 @@ from urllib.parse import urlencode, urlsplit
 from trac.admin.api import IAdminPanelProvider
 from trac.config import BoolOption, Option, PathOption
 from trac.core import implements, Component, ExtensionPoint, TracError
+from trac.db.api import DatabaseManager
 from trac.perm import PermissionSystem
 from trac.util.html import tag
 from trac.util.translation import _
@@ -370,17 +371,23 @@ class TracOidcAdminPanel(Component):
         if 'TRAC_ADMIN' in req.perm('admin', 'trac_oidc/unlink'):
             yield ('trac_oidc', _("TracOIDC"), 'unlink',
                    _("Unlink SSO Identity"))
+        if 'TRAC_ADMIN' in req.perm('admin', 'trac_oidc/rename'):
+            yield ('trac_oidc', _("TracOIDC"), 'rename',
+                   _("Rename Trac User"))
 
     def render_admin_panel(self, req, cat, page, path_info):
         req.perm(cat, page).require('TRAC_ADMIN')
 
         if page == 'unlink':
             return self._render_unlink(req, cat, page)
+        if page == 'rename':
+            return self._render_rename(req, cat, page)
 
         username = ''
         new_email = ''
         if req.method == 'POST':
-            username = (req.args.get('username') or '').strip()
+            username = self._normalize_username(
+                (req.args.get('username') or '').strip())
             new_email = (req.args.get('email') or '').strip()
             if not username:
                 add_warning(req, _("Username is required."))
@@ -409,7 +416,8 @@ class TracOidcAdminPanel(Component):
     def _render_unlink(self, req, cat, page):
         username = ''
         if req.method == 'POST':
-            username = (req.args.get('username') or '').strip()
+            username = self._normalize_username(
+                (req.args.get('username') or '').strip())
             if not username:
                 add_warning(req, _("Username is required."))
             elif not self.helper.account_exists(username):
@@ -434,6 +442,140 @@ class TracOidcAdminPanel(Component):
                         "linked.", username=username))
 
         return 'admin_trac_oidc_unlink.html', {'username': username}
+
+    def _render_rename(self, req, cat, page):
+        old_username = ''
+        new_username = ''
+        if req.method == 'POST':
+            old_username = self._normalize_username(
+                (req.args.get('old_username') or '').strip())
+            new_username = self._normalize_username(
+                (req.args.get('new_username') or '').strip())
+            if not old_username:
+                add_warning(req, _("Current username is required."))
+            elif not new_username:
+                add_warning(req, _("New username is required."))
+            elif old_username == new_username:
+                add_warning(req, _("The new username must be different from "
+                                   "the current username."))
+            elif old_username in UserDatabase.RESERVED_AUTHNAMES:
+                add_warning(req, _(
+                    "User '%(username)s' is reserved by Trac and cannot be "
+                    "renamed.", username=old_username))
+            elif new_username in UserDatabase.RESERVED_AUTHNAMES:
+                add_warning(req, _(
+                    "The username '%(username)s' is reserved by Trac.",
+                    username=new_username))
+            elif not self.helper.session_exists(old_username):
+                add_warning(req, _("User '%(username)s' does not exist.",
+                                   username=old_username))
+            elif self.helper.account_exists(new_username):
+                add_warning(req, _(
+                    "User '%(username)s' already exists.",
+                    username=new_username))
+            else:
+                self._rename_user(old_username, new_username)
+                self.log.info(
+                    "Administrator %s renamed the Trac user %r to %r",
+                    req.authname, old_username, new_username)
+                add_notice(req, _(
+                    "Trac user '%(old)s' renamed to '%(new)s'.",
+                    old=old_username, new=new_username))
+                req.redirect(req.href.admin(cat, page))
+
+        return 'admin_trac_oidc_rename.html', {
+            'old_username': old_username,
+            'new_username': new_username,
+            }
+
+    def _normalize_username(self, username):
+        if self.env.config.getbool('trac', 'ignore_auth_case', False):
+            return username.lower()
+        return username
+
+    def _rename_user(self, old_username, new_username):
+        tables = set(DatabaseManager(self.env).get_table_names())
+        with self.env.db_transaction as db:
+            db("UPDATE session SET sid=%s"
+               " WHERE sid=%s AND authenticated=1",
+               (new_username, old_username))
+            db("UPDATE session_attribute SET sid=%s"
+               " WHERE sid=%s AND authenticated=1",
+               (new_username, old_username))
+            db("UPDATE permission SET username=%s WHERE username=%s",
+               (new_username, old_username))
+            db("UPDATE auth_cookie SET name=%s WHERE name=%s",
+               (new_username, old_username))
+            db("UPDATE ticket SET owner=%s WHERE owner=%s",
+               (new_username, old_username))
+            db("UPDATE ticket SET reporter=%s WHERE reporter=%s",
+               (new_username, old_username))
+            db("UPDATE ticket_change SET author=%s WHERE author=%s",
+               (new_username, old_username))
+            db("UPDATE attachment SET author=%s WHERE author=%s",
+               (new_username, old_username))
+            db("UPDATE wiki SET author=%s WHERE author=%s",
+               (new_username, old_username))
+            db("UPDATE report SET author=%s WHERE author=%s",
+               (new_username, old_username))
+            db("UPDATE component SET owner=%s WHERE owner=%s",
+               (new_username, old_username))
+            if 'notify_watch' in tables:
+                db("UPDATE notify_watch SET sid=%s"
+                   " WHERE sid=%s AND authenticated=1",
+                   (new_username, old_username))
+            if 'notify_subscription' in tables:
+                db("UPDATE notify_subscription SET sid=%s"
+                   " WHERE sid=%s AND authenticated=1",
+                   (new_username, old_username))
+            self._rename_ticket_cc(db, old_username, new_username)
+            self._rename_ticket_change_values(db, old_username, new_username)
+        self.env.invalidate_known_users_cache()
+
+    def _rename_ticket_cc(self, db, old_username, new_username):
+        for ticket_id, cc in db(
+                "SELECT id, cc FROM ticket"
+                " WHERE cc IS NOT NULL AND cc<>''"):
+            new_cc = self._replace_in_cc_list(
+                cc, old_username, new_username)
+            if new_cc != cc:
+                db("UPDATE ticket SET cc=%s WHERE id=%s", (new_cc, ticket_id))
+
+    def _rename_ticket_change_values(self, db, old_username, new_username):
+        for ticket, time, field, oldvalue, newvalue in db(
+                "SELECT ticket, time, field, oldvalue, newvalue"
+                " FROM ticket_change"
+                " WHERE field IN ('owner', 'reporter', 'cc')"):
+            new_oldvalue = self._replace_change_value(
+                field, oldvalue, old_username, new_username)
+            new_newvalue = self._replace_change_value(
+                field, newvalue, old_username, new_username)
+            if (new_oldvalue, new_newvalue) != (oldvalue, newvalue):
+                db("UPDATE ticket_change SET oldvalue=%s, newvalue=%s"
+                   " WHERE ticket=%s AND time=%s AND field=%s",
+                   (new_oldvalue, new_newvalue, ticket, time, field))
+
+    @classmethod
+    def _replace_change_value(cls, field, value, old_username, new_username):
+        if not value:
+            return value
+        if field in ('owner', 'reporter'):
+            return (new_username if value == old_username else value)
+        if field == 'cc':
+            return cls._replace_in_cc_list(
+                value, old_username, new_username)
+        return value
+
+    @staticmethod
+    def _replace_in_cc_list(value, old_username, new_username):
+        if not value:
+            return value
+        users = [user.strip() for user in value.split(',')]
+        if old_username not in users:
+            return value
+        return ', '.join(
+            new_username if user == old_username else user
+            for user in users)
 
     # ITemplateProvider methods
 

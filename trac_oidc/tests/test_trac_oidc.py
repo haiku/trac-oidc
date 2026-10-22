@@ -438,6 +438,8 @@ class TestTracOidcAdminPanel(object):
              'Fix Email Address'),
             ('trac_oidc', 'TracOIDC', 'unlink',
              'Unlink SSO Identity'),
+            ('trac_oidc', 'TracOIDC', 'rename',
+             'Rename Trac User'),
             ]
 
     def test_render_admin_panel(self, panel, admin_req):
@@ -494,6 +496,8 @@ class TestTracOidcAdminPanel(object):
             os.path.join(templates_dir, 'admin_trac_oidc.html'))
         assert os.path.isfile(
             os.path.join(templates_dir, 'admin_trac_oidc_unlink.html'))
+        assert os.path.isfile(
+            os.path.join(templates_dir, 'admin_trac_oidc_rename.html'))
 
     def test_get_htdocs_dirs(self, panel):
         assert panel.get_htdocs_dirs() == []
@@ -558,6 +562,181 @@ class TestTracOidcAdminPanel(object):
             in admin_req.chrome['warnings'][0]
         assert not admin_req.redirect.called
         assert data == {'username': 'joe'}
+
+    def test_render_rename(self, panel, admin_req):
+        template, data = panel.render_admin_panel(
+            admin_req, 'trac_oidc', 'rename', None)
+        assert template == 'admin_trac_oidc_rename.html'
+        assert data == {'old_username': '', 'new_username': ''}
+
+    def test_render_rename_renames_user(self, env, panel, admin_req):
+        old_username = 'joe'
+        new_username = 'joseph'
+        ds = DetachedSession(env, old_username)
+        ds['name'] = 'Joe'
+        ds['email'] = 'joe@example.org'
+        ds['trac_oidc.subject'] = 'https://example.net?sub=42'
+        ds.save()
+        PermissionSystem(env).grant_permission(old_username, 'TICKET_VIEW')
+        with env.db_transaction as db:
+            db("INSERT INTO auth_cookie (cookie, name, ipnr, time)"
+               " VALUES (%s, %s, %s, %s)",
+               ('cookie1', old_username, '127.0.0.1', 0))
+            db("INSERT INTO ticket (id, owner, reporter, cc)"
+               " VALUES (%s, %s, %s, %s)",
+               (1, old_username, old_username,
+                '%s, other@example.org' % old_username))
+            db("INSERT INTO ticket (id, owner, reporter, cc)"
+               " VALUES (%s, %s, %s, %s)",
+               (2, 'nobody', 'nobody', 'nobody'))
+            db("INSERT INTO ticket_change"
+               " (ticket, time, author, field, oldvalue, newvalue)"
+               " VALUES (%s, %s, %s, %s, %s, %s)",
+               (1, 1, old_username, 'owner', '',
+                old_username))
+            db("INSERT INTO ticket_change"
+               " (ticket, time, author, field, oldvalue, newvalue)"
+               " VALUES (%s, %s, %s, %s, %s, %s)",
+               (1, 2, old_username, 'cc',
+                '%s, other@example.org' % old_username, old_username))
+            db("INSERT INTO ticket_change"
+               " (ticket, time, author, field, oldvalue, newvalue)"
+               " VALUES (%s, %s, %s, %s, %s, %s)",
+               (2, 3, 'nobody', 'owner', 'nobody', 'nobody'))
+            db("INSERT INTO attachment"
+               " (type, id, filename, size, time, description, author)"
+               " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+               ('ticket', '1', 'file.txt', 1, 0, '', old_username))
+            db("INSERT INTO wiki"
+               " (name, version, time, author, text, comment, readonly)"
+               " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+               ('WikiStart', 1, 0, old_username, '', '', 0))
+            db("INSERT INTO report (author, title, query, description)"
+               " VALUES (%s, %s, %s, %s)",
+               (old_username, 'Report', 'SELECT 1', ''))
+            db("INSERT INTO component (name, owner, description)"
+               " VALUES (%s, %s, %s)",
+               ('component1', old_username, ''))
+            db("INSERT INTO notify_watch"
+               " (sid, authenticated, class, realm, target)"
+               " VALUES (%s, %s, %s, %s, %s)",
+               (old_username, 1, 'Ticket', 'ticket', '1'))
+            db("INSERT INTO notify_subscription"
+               " (time, changetime, class, sid, authenticated, distributor,"
+               "  format, priority, adverb)"
+               " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+               (0, 0, 'Ticket', old_username, 1, 'email', 'text/plain', 1,
+                'always'))
+
+        admin_req.environ['REQUEST_METHOD'] = 'POST'
+        admin_req.args = {'old_username': ' joe ',
+                          'new_username': ' joseph '}
+        template, data = panel.render_admin_panel(
+            admin_req, 'trac_oidc', 'rename', None)
+
+        assert template == 'admin_trac_oidc_rename.html'
+        assert data == {'old_username': old_username,
+                        'new_username': new_username}
+        assert admin_req.redirect.mock_calls == [
+            mock.call(admin_req.href.admin('trac_oidc', 'rename')),
+            ]
+        assert "Trac user 'joe' renamed to 'joseph'" \
+            in admin_req.chrome['notices'][0]
+
+        ds = DetachedSession(env, new_username)
+        assert ds['name'] == 'Joe'
+        assert ds['email'] == 'joe@example.org'
+        assert ds['trac_oidc.subject'] == 'https://example.net?sub=42'
+        assert DetachedSession(env, old_username).sid == old_username
+
+        def values(sql, args):
+            return [row[0] for row in env.db_query(sql, args)]
+
+        assert values("SELECT username FROM permission"
+                      " WHERE username=%s", (new_username,)) == \
+            [new_username]
+        assert values("SELECT name FROM auth_cookie WHERE name=%s",
+                      (new_username,)) == [new_username]
+        assert values("SELECT owner FROM ticket WHERE id=1", ()) == \
+            [new_username]
+        assert values("SELECT reporter FROM ticket WHERE id=1", ()) == \
+            [new_username]
+        assert values("SELECT cc FROM ticket WHERE id=1", ()) == \
+            ['%s, other@example.org' % new_username]
+        assert values("SELECT cc FROM ticket WHERE id=2", ()) == ['nobody']
+        assert values("SELECT author FROM ticket_change WHERE ticket=1"
+                      " AND time=1 AND field='owner'", ()) == \
+            [new_username]
+        assert values("SELECT newvalue FROM ticket_change WHERE ticket=1"
+                      " AND time=1 AND field='owner'", ()) == \
+            [new_username]
+        assert values("SELECT oldvalue FROM ticket_change WHERE ticket=1"
+                      " AND time=2 AND field='cc'", ()) == \
+            ['%s, other@example.org' % new_username]
+        assert values("SELECT newvalue FROM ticket_change WHERE ticket=1"
+                      " AND time=2 AND field='cc'", ()) == [new_username]
+        assert values("SELECT oldvalue FROM ticket_change WHERE ticket=2"
+                      " AND time=3 AND field='owner'", ()) == ['nobody']
+        assert values("SELECT author FROM attachment"
+                      " WHERE filename='file.txt'", ()) == [new_username]
+        assert values("SELECT author FROM wiki WHERE name='WikiStart'",
+                      ()) == [new_username]
+        assert values("SELECT author FROM report WHERE title='Report'",
+                      ()) == [new_username]
+        assert values("SELECT owner FROM component"
+                      " WHERE name='component1'", ()) == [new_username]
+        assert values("SELECT sid FROM notify_watch", ()) == [new_username]
+        assert values("SELECT sid FROM notify_subscription", ()) == \
+            [new_username]
+
+    @pytest.mark.parametrize('old_username, new_username, warning', [
+        ('', 'new', 'Current username is required.'),
+        ('joe', '', 'New username is required.'),
+        ('joe', 'joe', 'must be different'),
+        ('anonymous', 'new', 'reserved by Trac'),
+        ('joe', 'authenticated', 'reserved by Trac'),
+        ('nobody', 'new', "User 'nobody' does not exist."),
+        ('joe', 'taken', "User 'taken' already exists."),
+        ])
+    def test_render_rename_validation(self, env, panel, admin_req,
+                                      old_username, new_username, warning):
+        for username in ('joe', 'taken'):
+            ds = DetachedSession(env, username)
+            ds['name'] = username.title()
+            ds.save()
+
+        admin_req.environ['REQUEST_METHOD'] = 'POST'
+        admin_req.args = {'old_username': old_username,
+                          'new_username': new_username}
+        template, data = panel.render_admin_panel(
+            admin_req, 'trac_oidc', 'rename', None)
+
+        assert warning in admin_req.chrome['warnings'][0]
+        assert not admin_req.redirect.called
+        assert data == {'old_username': old_username,
+                        'new_username': new_username}
+        assert DetachedSession(env, 'joe').sid == 'joe'
+
+    def test_normalize_username_ignore_auth_case(self, panel):
+        panel.config.set('trac', 'ignore_auth_case', 'true')
+        assert panel._normalize_username('MiXeD') == 'mixed'
+
+    def test_replace_change_value(self, panel):
+        assert panel._replace_change_value(
+            'owner', 'joe', 'joe', 'joseph') == 'joseph'
+        assert panel._replace_change_value(
+            'owner', 'nobody', 'joe', 'joseph') == 'nobody'
+        assert panel._replace_change_value(
+            'reporter', 'joe', 'joe', 'joseph') == 'joseph'
+        assert panel._replace_change_value(
+            'cc', 'joe, other', 'joe', 'joseph') == 'joseph, other'
+        assert panel._replace_change_value(
+            'comment', 'joe', 'joe', 'joseph') == 'joe'
+        assert panel._replace_change_value(
+            'owner', '', 'joe', 'joseph') == ''
+        assert panel._replace_in_cc_list('', 'joe', 'joseph') == ''
+        assert panel._replace_in_cc_list('nobody', 'joe', 'joseph') == \
+            'nobody'
 
 
 class TestAuthCookieManager(object):

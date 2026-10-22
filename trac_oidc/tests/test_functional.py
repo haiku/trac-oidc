@@ -464,3 +464,49 @@ def test_admin_unlink_sso_identity(test_app, env, id_token,
         assert DetachedSession(env, username)['trac_oidc.subject'] == subject
     finally:
         permissions.revoke_permission('anonymous', 'TRAC_ADMIN')
+
+
+def test_admin_rename_user(test_app, env, id_token):
+    permissions = PermissionSystem(env)
+    old_username = 'rename-old-%s' % id_token['sub']
+    new_username = 'rename-new-%s' % id_token['sub']
+    permissions.grant_permission('anonymous', 'TRAC_ADMIN')
+    try:
+        ds = DetachedSession(env, old_username)
+        ds['name'] = 'Rename Test'
+        ds['email'] = 'rename@example.org'
+        ds['trac_oidc.subject'] = 'https://example.net?sub=%s' \
+            % id_token['sub']
+        ds.save()
+        PermissionSystem(env).grant_permission(old_username, 'TICKET_VIEW')
+
+        resp = test_app.get('/admin/trac_oidc/rename')
+        assert resp.status_int == 200
+        assert 'Rename Trac User' in resp.text
+
+        form = resp.forms['modoidcrename']
+        assert form['old_username'].value == ''
+        assert form['new_username'].value == ''
+        form['old_username'] = old_username
+        form['new_username'] = new_username
+        resp = form.submit().follow()
+        assert resp.status_int == 200
+        assert "Trac user '%s' renamed to '%s'" \
+            % (old_username, new_username) in resp.text
+
+        assert not env.db_query(
+            "SELECT sid FROM session WHERE sid=%s AND authenticated=1",
+            (old_username,))
+        assert env.db_query(
+            "SELECT sid FROM session WHERE sid=%s AND authenticated=1",
+            (new_username,))
+        ds = DetachedSession(env, new_username)
+        assert ds['name'] == 'Rename Test'
+        assert ds['email'] == 'rename@example.org'
+        assert ds['trac_oidc.subject'] == 'https://example.net?sub=%s' \
+            % id_token['sub']
+        assert env.db_query(
+            "SELECT username FROM permission WHERE username=%s"
+            " AND action='TICKET_VIEW'", (new_username,))
+    finally:
+        permissions.revoke_permission('anonymous', 'TRAC_ADMIN')

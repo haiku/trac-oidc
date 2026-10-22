@@ -292,9 +292,9 @@ Some further details:
   ``trac_oidc.subject`` session attribute from their account; the next
   login will then link them to the account with the matching name.
 
-************************
-Aligning email addresses
-************************
+********************
+Administration pages
+********************
 
 Administrators can manually set the email address stored for a Trac
 account from the web administration interface, under **Admin → TracOIDC
@@ -311,6 +311,12 @@ submit the form.  This removes the current OIDC subject association, so
 the next login will attempt to link the account again according to the
 ``link_existing_accounts`` setting.  It is intended for troubleshooting
 and for retrying a linkage.
+
+The **Admin → TracOIDC → Rename Trac User** panel renames a Trac login.
+Enter the *Current Username* and the *New Username* and submit the form.
+The user's session data, permissions, tickets, ticket history, attachments,
+wiki edits, reports, component ownership, notification subscriptions and
+authentication cookies are updated to the new name.
 
 *****************************
 Migration from TracAuthOpenId
