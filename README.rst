@@ -239,7 +239,9 @@ In ``email`` mode the address is also synchronized on every subsequent
 login of an account which is already associated with an identity.  If
 the address stored in Trac is later changed so that it no longer matches
 the address supplied by the provider, the Trac address is updated to the
-one supplied by the provider.
+one supplied by the provider.  The provider must assert that the new
+address is verified (``email_verified``); an unverified or unknown
+address never replaces the one stored in Trac.
 
 For example::
 
@@ -259,8 +261,9 @@ For example::
    The ``email_verified`` claim is optional in OpenID Connect, so some
    providers do not supply it.  In the ``email`` mode such an identity is
    never linked, because the verification status of its email address is
-   unknown.  A provider may supply the claim in the *userinfo* response
-   rather than in the *id_token*; either is accepted.
+   unknown.  The same rule applies when synchronizing the address of an
+   already-linked account.  A provider may supply the claim in the
+   *userinfo* response rather than in the *id_token*; either is accepted.
 
 Some further details:
 

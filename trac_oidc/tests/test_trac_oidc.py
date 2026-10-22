@@ -651,6 +651,61 @@ class TestUserDatabase(object):
         assert userdb.find_session(id_token) == 'foo'
         assert DetachedSession(env, 'foo')['email'] == 'alex@terarocket.io'
 
+    @pytest.mark.parametrize('email_verified', [
+        False,
+        'false',
+        'False',
+        0,
+        None,
+        ])
+    def test_find_session_does_not_update_unverified_email(
+            self, env, userdb, link_mode, email_verified):
+        link_mode('email')
+        ds = DetachedSession(env, 'foo')
+        ds['trac_oidc.subject'] = 'https://example.net?sub=42'
+        ds['email'] = 'old@example.net'
+        ds.save()
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'email': 'attacker@example.com',
+                    'email_verified': email_verified,
+                    }
+        assert userdb.find_session(id_token) == 'foo'
+        assert DetachedSession(env, 'foo')['email'] == 'old@example.net'
+
+    def test_find_session_does_not_update_email_when_verification_unknown(
+            self, env, userdb, link_mode, caplog):
+        link_mode('email')
+        ds = DetachedSession(env, 'foo')
+        ds['trac_oidc.subject'] = 'https://example.net?sub=42'
+        ds['email'] = 'old@example.net'
+        ds.save()
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'email': 'attacker@example.com',
+                    }
+        assert userdb.find_session(id_token) == 'foo'
+        assert DetachedSession(env, 'foo')['email'] == 'old@example.net'
+        assert 'does not assert that the address is verified' in caplog.text
+
+    @pytest.mark.parametrize('email_verified', [
+        True,
+        'true',
+        'True',
+        1,
+        ])
+    def test_find_session_updates_verified_email(
+            self, env, userdb, link_mode, email_verified):
+        link_mode('email')
+        ds = DetachedSession(env, 'foo')
+        ds['trac_oidc.subject'] = 'https://example.net?sub=42'
+        ds['email'] = 'old@example.net'
+        ds.save()
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'email': 'new@example.net',
+                    'email_verified': email_verified,
+                    }
+        assert userdb.find_session(id_token) == 'foo'
+        assert DetachedSession(env, 'foo')['email'] == 'new@example.net'
+
     def test_find_session_email_match(self, env, userdb, link_mode):
         link_mode('email')
         ds = DetachedSession(env, 'foo')

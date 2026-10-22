@@ -542,7 +542,9 @@ class UserDatabase(Component):
         subsequent login of an already-associated account.  If the
         address stored in Trac later changes and no longer matches the
         one supplied by the identity provider, the Trac address is
-        updated from the identity provider.
+        updated from the identity provider.  Only a verified address
+        (``email_verified``) is synchronized; an unverified address never
+        replaces the stored one.
 
         .. note::
 
@@ -707,14 +709,27 @@ class UserDatabase(Component):
             "it. Please contact an administrator for assistance.",
             authname=authname))
 
+    @staticmethod
+    def _email_is_verified(id_token):
+        """Return whether the provider asserts the email is verified.
+
+        Per OpenID Connect Core 5.1.1 the ``email_verified`` claim is
+        optional.  An absent or unrecognized value means the
+        verification status is unknown, so the address must not be
+        trusted.
+        """
+        return str(id_token.get('email_verified')).lower() in ('true', '1')
+
     def _sync_email(self, id_token, authname):
         """Keep the account email in sync with the identity provider.
 
         When ``link_existing_accounts`` is ``email``, the address of the
         identity is authoritative for an account which is already
-        associated with that identity.  If the address stored in Trac
+        associated with that identity -- but only if the provider asserts
+        that the address is verified.  If the address stored in Trac
         differs (for example because the user changed it under
         preferences), update it to the address supplied by the provider.
+        An unverified address never replaces the stored one.
         """
         mode = (self.link_existing_accounts or 'no').strip().lower()
         if mode != 'email':
@@ -727,6 +742,13 @@ class UserDatabase(Component):
         email = email.strip()
         account_email = self.helper.get_session_attribute(authname, 'email')
         if account_email and account_email.strip().lower() == email.lower():
+            return
+        if not self._email_is_verified(id_token):
+            self.log.warning(
+                "Not updating the email address of the existing account %r "
+                "to %s from the OpenID Connect identity: the identity does "
+                "not assert that the address is verified.",
+                authname, email)
             return
         ds = DetachedSession(self.env, authname)
         ds['email'] = email
@@ -758,7 +780,7 @@ class UserDatabase(Component):
                 "account %r: the identity does not state whether its email "
                 "address (%s) is verified.", authname, email)
             return False
-        if str(verified).lower() not in ('true', '1'):
+        if not self._email_is_verified(id_token):
             self.log.error(
                 "Not linking the OpenID Connect identity to the existing "
                 "account %r: the email address of the identity (%s) is not "
