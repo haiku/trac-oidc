@@ -145,6 +145,36 @@ class TestOidcPlugin(object):
         items = list(plugin.get_navigation_items(req))
         assert 'Login using Keycloak' in str(items[0][2])
 
+    def test_get_navigation_items_registration_link(self, plugin, req):
+        plugin.config.set('trac_oidc', 'registration_url',
+                          'https://sso.example.org/register')
+        req.authname = 'anonymous'
+        items = list(plugin.get_navigation_items(req))
+        assert len(items) == 2
+        category, name, text = items[1]
+        assert category == 'metanav'
+        assert name == 'trac_oidc.register'
+        assert 'Register' in str(text)
+        assert 'https://sso.example.org/register' in str(text)
+
+    def test_get_navigation_items_custom_register_text(self, plugin, req):
+        plugin.config.set('trac_oidc', 'registration_url',
+                          'https://sso.example.org/register')
+        plugin.config.set('trac_oidc', 'register_button_text',
+                          'Create an account')
+        req.authname = 'anonymous'
+        items = list(plugin.get_navigation_items(req))
+        assert 'Create an account' in str(items[1][2])
+
+    def test_get_navigation_items_no_registration_link_when_logged_in(
+            self, plugin, req):
+        plugin.config.set('trac_oidc', 'registration_url',
+                          'https://sso.example.org/register')
+        plugin.show_logout_link = True
+        req.authname = 'user1'
+        items = list(plugin.get_navigation_items(req))
+        assert 'trac_oidc.register' not in [name for _, name, _ in items]
+
     def test_get_navigation_items_logged_in(self, env, plugin, req):
         plugin.show_logout_link = True
         req.environ.update({

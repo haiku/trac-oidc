@@ -117,6 +117,18 @@ class OidcPlugin(Component):
         'trac_oidc', 'login_button_text', 'Login using OpenID Connect',
         """Text of the login link shown in the metanav.""")
 
+    registration_url = Option(
+        'trac_oidc', 'registration_url', '',
+        """URL of the identity provider's account registration page.
+
+        When set, a *Register* link is shown in the metanav for users who
+        are not logged in.  The link is not shown when this option is
+        empty.""")
+
+    register_button_text = Option(
+        'trac_oidc', 'register_button_text', 'Register',
+        """Text of the registration link shown in the metanav.""")
+
     openid_realm = Option(
         'trac_oidc', 'openid_realm', '',
         """Google-only OpenID 2.0 realm, used when migrating accounts from
@@ -152,6 +164,10 @@ class OidcPlugin(Component):
             login_link = tag.a(_(self.login_button_text),
                                href=oidc_href('login', return_to=path_qs))
             yield 'metanav', 'trac_oidc.login', login_link
+            if self.registration_url:
+                yield ('metanav', 'trac_oidc.register',
+                       tag.a(_(self.register_button_text),
+                             href=self.registration_url))
 
         elif self.show_logout_link:
             # Logged in and LoginModule is disabled, show logout link

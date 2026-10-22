@@ -129,6 +129,11 @@ In your ``trac.ini``::
   # Optional: text of the login link in the metanav.
   # login_button_text = Login using Keycloak
 
+  # Optional: URL of the identity provider's account registration page.
+  # When set, a "Register" link is shown in the metanav while logged out.
+  # registration_url = https://sso.example.org/register
+  # register_button_text = Register
+
   # Optional: how to authenticate to the token endpoint.  Keycloak's
   # default client authenticator accepts client_secret_post (the
   # default) and client_secret_basic.
