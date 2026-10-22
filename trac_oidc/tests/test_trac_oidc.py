@@ -455,6 +455,62 @@ class TestUserDatabase(object):
         id_token = {'iss': 'https://example.net', 'sub': '42'}
         assert userdb.find_session(id_token) is None
 
+    @pytest.mark.parametrize('account_email', [
+        'kallisti5@unixzen.com',
+        None,
+        ])
+    def test_find_session_updates_email(self, env, userdb, link_mode,
+                                        account_email):
+        link_mode('email')
+        ds = DetachedSession(env, 'foo')
+        ds['trac_oidc.subject'] = 'https://example.net?sub=42'
+        if account_email:
+            ds['email'] = account_email
+        ds.save()
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'email': 'alex@terarocket.io',
+                    'email_verified': True,
+                    }
+        assert userdb.find_session(id_token) == 'foo'
+        assert DetachedSession(env, 'foo')['email'] == 'alex@terarocket.io'
+
+    def test_find_session_email_match(self, env, userdb, link_mode):
+        link_mode('email')
+        ds = DetachedSession(env, 'foo')
+        ds['trac_oidc.subject'] = 'https://example.net?sub=42'
+        ds['email'] = 'alex@terarocket.io'
+        ds.save()
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'email': 'alex@terarocket.io',
+                    'email_verified': True,
+                    }
+        assert userdb.find_session(id_token) == 'foo'
+
+    def test_find_session_email_not_updated_by_name_mode(self, env, userdb,
+                                                         link_mode):
+        link_mode('name')
+        ds = DetachedSession(env, 'foo')
+        ds['trac_oidc.subject'] = 'https://example.net?sub=42'
+        ds['email'] = 'kallisti5@unixzen.com'
+        ds.save()
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'email': 'alex@terarocket.io',
+                    'email_verified': True,
+                    }
+        assert userdb.find_session(id_token) == 'foo'
+        assert DetachedSession(env, 'foo')['email'] == 'kallisti5@unixzen.com'
+
+    def test_find_session_email_not_updated_if_identity_has_none(
+            self, env, userdb, link_mode):
+        link_mode('email')
+        ds = DetachedSession(env, 'foo')
+        ds['trac_oidc.subject'] = 'https://example.net?sub=42'
+        ds['email'] = 'kallisti5@unixzen.com'
+        ds.save()
+        id_token = {'iss': 'https://example.net', 'sub': '42'}
+        assert userdb.find_session(id_token) == 'foo'
+        assert DetachedSession(env, 'foo')['email'] == 'kallisti5@unixzen.com'
+
     def test_create_session(self, userdb, helper):
         helper.account_exists.return_value = False
         id_token = {

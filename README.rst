@@ -221,6 +221,12 @@ In every mode, if an account with the supplied name already exists but
 cannot be linked, the login is refused with an error page.  The page
 always asks the user to contact an administrator.
 
+In ``email`` mode the address is also synchronized on every subsequent
+login of an account which is already associated with an identity.  If
+the address stored in Trac is later changed so that it no longer matches
+the address supplied by the provider, the Trac address is updated to the
+one supplied by the provider.
+
 For example::
 
   [trac_oidc]

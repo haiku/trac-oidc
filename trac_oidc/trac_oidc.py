@@ -428,6 +428,12 @@ class UserDatabase(Component):
         error page is shown.  A duplicate account such as ``joe (2)`` is
         never created.
 
+        In ``email`` mode the address is also synchronized on every
+        subsequent login of an already-associated account.  If the
+        address stored in Trac later changes and no longer matches the
+        one supplied by the identity provider, the Trac address is
+        updated from the identity provider.
+
         .. note::
 
            Linking by name alone allows anybody who can register an
@@ -456,11 +462,15 @@ class UserDatabase(Component):
         identity_url = id_token.get('openid_id') if 'google' in iss else None
 
         authname = self.find_session_by_oidc_subject(iss, sub)
-        if not authname and identity_url:
+        if authname:
+            self._sync_email(id_token, authname)
+            return authname
+        if identity_url:
             # Fallback to using the OpenIDv2 identity URL which
             # (may have) been set by the ``TracAuthOpenId`` plugin
             authname = self.find_session_by_openid_id(identity_url)
             if authname:
+                self._sync_email(id_token, authname)
                 self.log.info(
                     "Claiming session %s with oid identity %s for (%s, %s)",
                     authname, identity_url, iss, sub)
@@ -570,6 +580,34 @@ class UserDatabase(Component):
             "it. Please contact an administrator for assistance.",
             authname=authname))
 
+    def _sync_email(self, id_token, authname):
+        """Keep the account email in sync with the identity provider.
+
+        When ``link_existing_accounts`` is ``email``, the address of the
+        identity is authoritative for an account which is already
+        associated with that identity.  If the address stored in Trac
+        differs (for example because the user changed it under
+        preferences), update it to the address supplied by the provider.
+        """
+        mode = (self.link_existing_accounts or 'no').strip().lower()
+        if mode != 'email':
+            return
+        email = id_token.get('email')
+        if not email:
+            # The provider does not expose an address.  Leave the
+            # account as it is.
+            return
+        email = email.strip()
+        account_email = self.helper.get_session_attribute(authname, 'email')
+        if account_email and account_email.strip().lower() == email.lower():
+            return
+        ds = DetachedSession(self.env, authname)
+        ds['email'] = email
+        ds.save()
+        self.log.info(
+            "Updated the email address of the existing account %r to %s "
+            "from the OpenID Connect identity.", authname, email)
+
     def _email_matches(self, id_token, authname):
         """ Check that the email address of the identity matches the one
         stored for the account.
@@ -612,12 +650,16 @@ class UserDatabase(Component):
                 "account %r: the email address of the identity (%s) does "
                 "not match the email address of the account (%s).",
                 authname, email, account_email)
-            raise EmailMismatchError(_(
-                "The account you are logging into has a misaligned email "
-                "address between what is known to Trac, and what is "
-                "configurd within our OIDC provider.  Please contact an "
-                "administrator for assistance"))
+            raise self._email_mismatch_error()
         return True
+
+    @staticmethod
+    def _email_mismatch_error():
+        return EmailMismatchError(_(
+            "The account you are logging into has a misaligned email "
+            "address between what is known to Trac, and what is "
+            "configurd within our OIDC provider.  Please contact an "
+            "administrator for assistance"))
 
     def find_session_by_oidc_subject(self, iss, sub):
         subject_id = self.subject_uri(iss, sub)

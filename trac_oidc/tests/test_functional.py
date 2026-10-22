@@ -313,6 +313,42 @@ def test_link_existing_account_email_mismatch(test_app, env, id_token,
     assert get_accounts_for_subject(env, subject) == []
 
 
+def test_linked_account_email_updated(test_app, env, id_token,
+                                      link_existing_accounts):
+    # An identity which is already associated with a Trac account is
+    # trusted to supply the current email address.  If it was changed in
+    # Trac after the account was linked, it is updated on login.
+    username = 'alex-%s' % id_token['sub']
+    subject = 'https://example.net?sub=%s' % id_token['sub']
+    ds = DetachedSession(env, username)
+    ds['name'] = 'Alex'
+    ds['email'] = 'kallisti5@unixzen.com'
+    ds['trac_oidc.subject'] = subject
+    ds.save()
+
+    id_token.update({
+        'preferred_username': username,
+        'email': 'alex@terarocket.io',
+        'email_verified': True,
+        'name': 'Alex',
+        })
+
+    link_existing_accounts('email')
+
+    resp = test_app.get('/prefs')
+    resp = resp.click('^Login .* OpenID Connect$', extra_environ={
+        'HTTP_REFERER': resp.request.url,
+        })
+    resp = test_app.get(oauth_redirect_url(resp.location))
+    resp = resp.follow()
+    assert is_logged_in(resp)
+    # The association is retained and the Trac email address now matches
+    # the one supplied by the identity provider.
+    ds = DetachedSession(env, username)
+    assert ds['trac_oidc.subject'] == subject
+    assert ds['email'] == 'alex@terarocket.io'
+
+
 def test_no_linking_refuses_duplicate_account(test_app, env, id_token,
                                               link_existing_accounts):
     # Without the link_existing_accounts option, an account with a
