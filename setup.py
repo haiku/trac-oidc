@@ -6,7 +6,7 @@ import os
 
 from setuptools import setup
 
-VERSION = '0.1.5.post1.dev0'
+VERSION = '0.2.0.dev0'
 
 here = os.path.abspath(os.path.dirname(__file__))
 with open(os.path.join(here, 'README.rst'), encoding='utf-8') as fp:
@@ -41,7 +41,7 @@ setup(
     license='Trac license (BSD-like)',
     author='Jeff Dairiki',
     author_email='dairiki@dairiki.org',
-    url='https://github.com/trac-hacks/trac-oidc',
+    url='https://github.com/haiku/trac-oidc',
 
     packages=['trac_oidc'],
     include_package_data=True,
