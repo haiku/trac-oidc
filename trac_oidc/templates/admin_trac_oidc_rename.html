@@ -1,0 +1,40 @@
+# extends 'admin.html'
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>
+      # block admintitle
+      ${_("Rename Trac User")}
+      # endblock admintitle
+    </title>
+  </head>
+
+  <body>
+    # block adminpanel
+    <h2>${_("Rename Trac User")}</h2>
+
+    <form class="mod" id="modoidcrename" method="post"
+          action="${req.request_path}">
+      ${jmacros.form_token_input()}
+      <fieldset>
+        <legend>${_("Rename a Trac user")}</legend>
+        <div class="field">
+          <label>${_("Current Username:")}<br />
+            <input type="text" name="old_username" size="48"
+                   value="${old_username}" />
+          </label>
+        </div>
+        <div class="field">
+          <label>${_("New Username:")}<br />
+            <input type="text" name="new_username" size="48"
+                   value="${new_username}" />
+          </label>
+        </div>
+      </fieldset>
+      <div class="buttons">
+        <input type="submit" value="${_('Rename Trac User')}" />
+      </div>
+    </form>
+    # endblock adminpanel
+  </body>
+</html>
