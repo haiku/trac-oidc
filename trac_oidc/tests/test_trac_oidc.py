@@ -751,6 +751,71 @@ class TestUserDatabase(object):
             env.config.set('trac_oidc', 'link_existing_accounts', mode)
         return set_mode
 
+    @pytest.fixture
+    def ignore_auth_case(self, env):
+        def set_ignore_case(enabled):
+            env.config.set('trac', 'ignore_auth_case',
+                           'true' if enabled else 'false')
+        return set_ignore_case
+
+    def test_create_session_normalizes_authname(self, env, userdb,
+                                                ignore_auth_case):
+        """With ``ignore_auth_case`` Trac would authenticate ``Joe`` as
+        ``joe``; the session must therefore be created with that name.
+        """
+        ignore_auth_case(True)
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'Joe',
+                    'name': 'Joe',
+                    'email': 'joe@example.net',
+                    }
+        assert userdb.create_session(id_token) == 'joe'
+        ds = DetachedSession(env, 'joe')
+        assert ds['trac_oidc.subject'] == 'https://example.net?sub=42'
+        assert ds['email'] == 'joe@example.net'
+        assert 'trac_oidc.subject' not in DetachedSession(env, 'Joe')
+
+    def test_create_session_refuses_case_insensitive_duplicate(
+            self, env, userdb, existing_account, ignore_auth_case):
+        """An identity called ``Joe`` must not create a second session
+        which Trac would then authenticate as the existing ``joe``.
+        """
+        ignore_auth_case(True)
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'Joe',
+                    }
+        with pytest.raises(AccountLinkError) as excinfo:
+            userdb.create_session(id_token)
+        assert "'joe' already exists" in str(excinfo.value)
+        assert 'trac_oidc.subject' not in DetachedSession(env, 'Joe')
+        assert 'trac_oidc.subject' not in DetachedSession(env, 'joe')
+
+    def test_create_session_does_not_normalize_by_default(
+            self, env, userdb, existing_account, ignore_auth_case):
+        """Without ``ignore_auth_case`` Trac treats ``joe`` and ``Joe``
+        as different users, so a separate session is still created.
+        """
+        ignore_auth_case(False)
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'Joe',
+                    }
+        assert userdb.create_session(id_token) == 'Joe'
+        assert DetachedSession(env, 'Joe')['trac_oidc.subject'] == \
+            'https://example.net?sub=42'
+
+    def test_link_session_by_name_case_insensitive(
+            self, env, userdb, existing_account, link_mode,
+            ignore_auth_case):
+        link_mode('name')
+        ignore_auth_case(True)
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'JOE',
+                    }
+        assert userdb.link_session(id_token) == 'joe'
+        ds = DetachedSession(env, 'joe')
+        assert ds['trac_oidc.subject'] == 'https://example.net?sub=42'
+        assert 'trac_oidc.subject' not in DetachedSession(env, 'JOE')
+
     @staticmethod
     def assert_link_refused(userdb, id_token):
         with pytest.raises(AccountLinkError) as excinfo:

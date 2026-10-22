@@ -557,6 +557,22 @@ class UserDatabase(Component):
     def __init__(self):
         self.helper = SessionHelper(self.env)
 
+    def _authname(self, name):
+        """Return the login name that Trac will actually use for *name*.
+
+        When the ``[trac] ignore_auth_case`` option is enabled, Trac's
+        ``LoginModule`` lower-cases login names before authenticating
+        them (see ``LoginModule._do_login``).  The name supplied by the
+        identity provider must be normalized in exactly the same way;
+        otherwise an identity named ``Admin`` would be checked against
+        (and might create) a session called ``Admin`` even though Trac
+        would then authenticate it as the existing account ``admin``.
+
+        """
+        if self.env.config.getbool('trac', 'ignore_auth_case', False):
+            return name.lower()
+        return name
+
     def find_session(self, id_token):
         """ Find existing authenticated session corresponding to identity.
 
@@ -591,7 +607,8 @@ class UserDatabase(Component):
 
         """
         subject_id = self.subject_uri(id_token['iss'], id_token['sub'])
-        preferred_username = self.preferred_username(id_token)
+        preferred_username = self._authname(
+            self.preferred_username(id_token))
         if preferred_username in self.RESERVED_AUTHNAMES:
             self.log.error(
                 "Not creating a new account for the OpenID Connect identity "
@@ -642,7 +659,7 @@ class UserDatabase(Component):
                 self.link_existing_accounts)
             mode = 'no'
 
-        authname = self.preferred_username(id_token)
+        authname = self._authname(self.preferred_username(id_token))
         if authname in self.RESERVED_AUTHNAMES:
             self.log.error(
                 "Not linking the OpenID Connect identity to the account %r: "
