@@ -188,10 +188,12 @@ Linking to existing accounts
 By default, every OpenID Connect identity gets its own Trac account.
 If the provider supplies a ``preferred_username`` which is identical to
 the name of an account that already exists in Trac — for instance an
-account managed by the AccountManagerPlugin_ — then a *second* account
-is created, with a suffix (e.g. ``joe`` and ``joe (2)``).  The new
-account does not inherit the permissions, the properties or the ticket
-history of the existing one.
+account managed by the AccountManagerPlugin_ — a duplicate account is
+*never* created.  Instead, unless linking is enabled and succeeds, the
+login is refused with an error page asking the user to contact an
+administrator.  This avoids silently creating a second account (e.g.
+``joe (2)``) which would not inherit the permissions, properties or
+ticket history of the existing one.
 
 The ``link_existing_accounts`` option changes this behavior.  When it
 is enabled, and the name of the identity is identical to the name of an
@@ -214,6 +216,10 @@ The option takes one of the following values:
    address is verified, using the ``email_verified`` claim.  An identity
    whose provider does not state whether the address is verified is
    never linked.
+
+In every mode, if an account with the supplied name already exists but
+cannot be linked, the login is refused with an error page.  The page
+always asks the user to contact an administrator.
 
 For example::
 
@@ -242,7 +248,13 @@ Some further details:
   supplied by the provider.  The comparison is case-sensitive.
 
 * An account which is already associated with a *different* OpenID
-  Connect identity is never linked to.  An error is logged instead.
+  Connect identity is never linked to.  The login fails with an error
+  page instead.
+
+* If an account with the matching name exists but cannot be linked for
+  any other reason (for example, the provider does not supply a verified
+  email address in ``email`` mode), the login fails with an error page
+  rather than creating a duplicate account.
 
 * The attributes of the existing account (e.g. its name and email
   address) are left alone.  They may still be administered by the

@@ -177,7 +177,7 @@ def link_existing_accounts(env):
 
 def test(test_app, id_token):
     id_token.update({
-        'email': 'joe@example.org',
+        'email': 'joe-%s@example.org' % id_token['sub'],
         'name': 'Joe Bloe',
         })
 
@@ -279,9 +279,44 @@ def test_link_existing_account(test_app, env, id_token,
     assert ds['email'] == 'joe@example.org'
 
 
-def test_no_linking_creates_new_account(test_app, env, id_token):
+def test_link_existing_account_email_mismatch(test_app, env, id_token,
+                                              link_existing_accounts):
+    # An existing account whose email address disagrees with the
+    # identity's address must not be linked to, and must not result in a
+    # duplicate account being created behind the user's back.
+    username = 'joe-%s' % id_token['sub']
+    ds = DetachedSession(env, username)
+    ds['name'] = 'Joe Bloe'
+    ds['email'] = 'joe@example.org'
+    ds.save()
+
+    id_token.update({
+        'preferred_username': username,
+        'email': 'other@example.org',
+        'email_verified': True,
+        'name': 'Joe Bloe',
+        })
+
+    link_existing_accounts('email')
+
+    resp = test_app.get('/prefs')
+    resp = resp.click('^Login .* OpenID Connect$', extra_environ={
+        'HTTP_REFERER': resp.request.url,
+        })
+    resp = test_app.get(oauth_redirect_url(resp.location), expect_errors=True)
+    assert resp.status_int == 500
+    assert 'misaligned email address' in resp.text
+    assert 'contact an administrator' in resp.text
+    # No account was associated with the identity, and no duplicate
+    # account was created.
+    subject = 'https://example.net?sub=%s' % id_token['sub']
+    assert get_accounts_for_subject(env, subject) == []
+
+
+def test_no_linking_refuses_duplicate_account(test_app, env, id_token,
+                                              link_existing_accounts):
     # Without the link_existing_accounts option, an account with a
-    # matching name does not prevent a new account from being created.
+    # matching name must not silently be duplicated as "user (2)".
     username = 'joe-%s' % id_token['sub']
     ds = DetachedSession(env, username)
     ds['name'] = 'Joe Bloe'
@@ -294,15 +329,19 @@ def test_no_linking_creates_new_account(test_app, env, id_token):
         'name': 'Joe Bloe',
         })
 
+    link_existing_accounts('no')
+
     resp = test_app.get('/prefs')
     resp = resp.click('^Login .* OpenID Connect$', extra_environ={
         'HTTP_REFERER': resp.request.url,
         })
-    resp = test_app.get(oauth_redirect_url(resp.location))
-    resp = resp.follow()
-    assert is_logged_in(resp)
+    resp = test_app.get(oauth_redirect_url(resp.location), expect_errors=True)
+    assert resp.status_int == 500
+    assert 'already exists in Trac' in resp.text
+    assert 'contact an administrator' in resp.text
+    # No duplicate account was created, and the pre-existing account is
+    # left alone.
     subject = 'https://example.net?sub=%s' % id_token['sub']
-    assert get_accounts_for_subject(env, subject) == ['%s (2)' % username]
-    # The pre-existing account is left alone.
+    assert get_accounts_for_subject(env, subject) == []
     ds = DetachedSession(env, username)
     assert ds.get('trac_oidc.subject') is None

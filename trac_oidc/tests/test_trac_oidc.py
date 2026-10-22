@@ -21,6 +21,7 @@ from trac.web.session import DetachedSession
 
 from ..api import ILoginManager
 from ..authenticator import AuthenticationError, AuthenticationFailed
+from ..trac_oidc import AccountLinkError, EmailMismatchError
 
 
 @pytest.fixture
@@ -455,6 +456,7 @@ class TestUserDatabase(object):
         assert userdb.find_session(id_token) is None
 
     def test_create_session(self, userdb, helper):
+        helper.account_exists.return_value = False
         id_token = {
             'iss': 'https://example.net',
             'sub': '42',
@@ -463,7 +465,7 @@ class TestUserDatabase(object):
             'email': 'user@example.net',
             }
         authname = userdb.create_session(id_token)
-        assert helper.mock_calls == [
+        assert helper.create_session.mock_calls == [
             mock.call.create_session('username', {
                 'trac_oidc.subject': 'https://example.net?sub=42',
                 'name': 'Joe',
@@ -471,6 +473,34 @@ class TestUserDatabase(object):
                 }),
             ]
         assert authname == helper.create_session.return_value
+
+    def test_create_session_refuses_duplicate(self, userdb, helper):
+        helper.account_exists.return_value = True
+        id_token = {
+            'iss': 'https://example.net',
+            'sub': '42',
+            'preferred_username': 'joe',
+            'name': 'Joe',
+            'email': 'user@example.net',
+            }
+        with pytest.raises(AccountLinkError) as excinfo:
+            userdb.create_session(id_token)
+        assert "'joe' already exists" in str(excinfo.value)
+        assert 'contact an administrator' in str(excinfo.value)
+        assert not helper.create_session.called
+
+    def test_create_session_refuses_reserved_name(self, userdb, helper):
+        helper.account_exists.return_value = False
+        id_token = {
+            'iss': 'https://example.net',
+            'sub': '42',
+            'preferred_username': 'anonymous',
+            }
+        with pytest.raises(AccountLinkError) as excinfo:
+            userdb.create_session(id_token)
+        assert 'reserved by Trac' in str(excinfo.value)
+        assert 'contact an administrator' in str(excinfo.value)
+        assert not helper.create_session.called
 
     @pytest.fixture
     def existing_account(self, env):
@@ -488,6 +518,12 @@ class TestUserDatabase(object):
             env.config.set('trac_oidc', 'link_existing_accounts', mode)
         return set_mode
 
+    @staticmethod
+    def assert_link_refused(userdb, id_token):
+        with pytest.raises(AccountLinkError) as excinfo:
+            userdb.link_session(id_token)
+        assert 'contact an administrator' in str(excinfo.value)
+
     def test_link_session_disabled(self, env, userdb, existing_account,
                                    link_mode):
         link_mode('no')
@@ -495,7 +531,7 @@ class TestUserDatabase(object):
                     'preferred_username': 'joe',
                     'email': 'joe@example.net',
                     }
-        assert userdb.link_session(id_token) is None
+        self.assert_link_refused(userdb, id_token)
         ds = DetachedSession(env, 'joe')
         assert ds.get('trac_oidc.subject') is None
 
@@ -540,7 +576,7 @@ class TestUserDatabase(object):
         id_token = {'iss': 'https://example.net', 'sub': '42',
                     'preferred_username': 'joe',
                     }
-        assert userdb.link_session(id_token) is None
+        self.assert_link_refused(userdb, id_token)
         ds = DetachedSession(env, 'joe')
         assert ds['trac_oidc.subject'] == 'https://example.net?sub=99'
 
@@ -584,7 +620,9 @@ class TestUserDatabase(object):
                     'email': 'attacker@example.net',
                     'email_verified': True,
                     }
-        assert userdb.link_session(id_token) is None
+        with pytest.raises(EmailMismatchError) as excinfo:
+            userdb.link_session(id_token)
+        assert 'misaligned email address' in str(excinfo.value)
         ds = DetachedSession(env, 'joe')
         assert ds.get('trac_oidc.subject') is None
 
@@ -603,7 +641,7 @@ class TestUserDatabase(object):
                     'email': 'joe@example.net',
                     'email_verified': email_verified,
                     }
-        assert userdb.link_session(id_token) is None
+        self.assert_link_refused(userdb, id_token)
         ds = DetachedSession(env, 'joe')
         assert ds.get('trac_oidc.subject') is None
 
@@ -622,7 +660,7 @@ class TestUserDatabase(object):
                     'preferred_username': 'joe',
                     'email': 'joe@example.net',
                     }
-        assert userdb.link_session(id_token) is None
+        self.assert_link_refused(userdb, id_token)
         ds = DetachedSession(env, 'joe')
         assert ds.get('trac_oidc.subject') is None
 
@@ -632,7 +670,7 @@ class TestUserDatabase(object):
         id_token = {'iss': 'https://example.net', 'sub': '42',
                     'preferred_username': 'joe',
                     }
-        assert userdb.link_session(id_token) is None
+        self.assert_link_refused(userdb, id_token)
         ds = DetachedSession(env, 'joe')
         assert ds.get('trac_oidc.subject') is None
 
@@ -647,7 +685,7 @@ class TestUserDatabase(object):
                     'email': 'joe@example.net',
                     'email_verified': True,
                     }
-        assert userdb.link_session(id_token) is None
+        self.assert_link_refused(userdb, id_token)
         ds = DetachedSession(env, 'joe')
         assert ds.get('trac_oidc.subject') is None
 
@@ -657,7 +695,7 @@ class TestUserDatabase(object):
         id_token = {'iss': 'https://example.net', 'sub': '42',
                     'preferred_username': 'joe',
                     }
-        assert userdb.link_session(id_token) is None
+        self.assert_link_refused(userdb, id_token)
         ds = DetachedSession(env, 'joe')
         assert ds.get('trac_oidc.subject') is None
 

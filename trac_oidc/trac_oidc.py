@@ -34,6 +34,26 @@ from .authenticator import (
 from .compat import db_query, is_component_enabled, logout_link
 
 
+class AccountLinkError(TracError):
+    """An OpenID Connect identity could not be linked to an existing
+    Trac account.
+
+    Creating a new account in this situation would silently produce a
+    duplicate (for example, ``joe (2)``), so the login is refused and the
+    user is told to contact an administrator instead.
+    """
+
+
+class EmailMismatchError(AccountLinkError):
+    """The email address of an OIDC identity does not match the email
+    address of the existing Trac account it is being linked to.
+
+    This is raised (rather than silently creating a second account) when
+    ``link_existing_accounts`` is set to ``email`` and an account with a
+    matching name exists, but the addresses differ.
+    """
+
+
 class OidcPlugin(Component):
     """ Authenticate via OpenID Connect
 
@@ -390,8 +410,9 @@ class UserDatabase(Component):
 
         ``no``
             Never link.  A new account is created for every identity which
-            is not already associated with a Trac session.  This is the
-            default.
+            is not already associated with a Trac session, unless an
+            account with the supplied name already exists.  In that case
+            the login is refused with an error page.  This is the default.
         ``name``
             Link to the existing account with the matching name.
         ``email``
@@ -401,6 +422,11 @@ class UserDatabase(Component):
             assert that the email address is verified, by means of the
             ``email_verified`` claim.  An identity whose provider does not
             state whether the address is verified is never linked.
+
+        In every mode, if an account with the supplied name already exists
+        but cannot be linked to the identity, the login is refused and an
+        error page is shown.  A duplicate account such as ``joe (2)`` is
+        never created.
 
         .. note::
 
@@ -447,6 +473,23 @@ class UserDatabase(Component):
         """
         subject_id = self.subject_uri(id_token['iss'], id_token['sub'])
         preferred_username = self.preferred_username(id_token)
+        if preferred_username in self.RESERVED_AUTHNAMES:
+            self.log.error(
+                "Not creating a new account for the OpenID Connect identity "
+                "(%s): the username %r is reserved by trac.",
+                subject_id, preferred_username)
+            raise AccountLinkError(_(
+                "The username '%(authname)s' supplied by your OpenID "
+                "Connect provider is reserved by Trac. Please contact an "
+                "administrator for assistance.", authname=preferred_username))
+        if self.helper.account_exists(preferred_username):
+            # Creating a new session here would silently create a
+            # duplicate account such as ``joe (2)``.  Refuse instead.
+            self.log.error(
+                "Not creating a new account for the OpenID Connect identity "
+                "(%s): an account named %r already exists and the identity "
+                "could not be linked to it.", subject_id, preferred_username)
+            raise self._account_exists_error(preferred_username)
         attributes = {self.SUBJECT_SKEY: subject_id}
         attributes.update(self.default_attributes(id_token))
         authname = self.helper.create_session(preferred_username, attributes)
@@ -464,18 +507,21 @@ class UserDatabase(Component):
         ``link_existing_accounts`` option.
 
         Returns the authname of the account to which the identity was
-        linked, or ``None`` if the identity was not linked to any
-        existing account.
+        linked, or ``None`` if no account with a matching name exists.
+
+        Raises :class:`AccountLinkError` if an account with a matching
+        name exists but the identity cannot be linked to it.  (Creating a
+        new account in that case would silently produce a duplicate such
+        as ``joe (2)``.)
 
         """
         mode = (self.link_existing_accounts or 'no').strip().lower()
-        if mode not in ('name', 'email'):
-            if mode != 'no':
-                self.log.error(
-                    "Invalid value %r for the link_existing_accounts option;"
-                    " expected one of 'no', 'name' or 'email'.",
-                    self.link_existing_accounts)
-            return None
+        if mode not in ('name', 'email') and mode != 'no':
+            self.log.error(
+                "Invalid value %r for the link_existing_accounts option;"
+                " expected one of 'no', 'name' or 'email'.",
+                self.link_existing_accounts)
+            mode = 'no'
 
         authname = self.preferred_username(id_token)
         if authname in self.RESERVED_AUTHNAMES:
@@ -486,6 +532,13 @@ class UserDatabase(Component):
         if not self.helper.account_exists(authname):
             # No account with that name exists (yet).
             return None
+
+        if mode == 'no':
+            self.log.error(
+                "Not creating a new account for the OpenID Connect identity: "
+                "an account named %r already exists, but "
+                "link_existing_accounts is disabled.", authname)
+            raise self._account_exists_error(authname)
 
         subject_id = self.subject_uri(id_token['iss'], id_token['sub'])
         linked_subject = self.helper.get_session_attribute(
@@ -498,16 +551,24 @@ class UserDatabase(Component):
                 "existing account %r: that account is already associated "
                 "with another identity (%s).",
                 subject_id, authname, linked_subject)
-            return None
+            raise self._account_exists_error(authname)
 
         if mode == 'email' and not self._email_matches(id_token, authname):
-            return None
+            raise self._account_exists_error(authname)
 
         self.associate_session(authname, id_token['iss'], id_token['sub'])
         self.log.info(
             "Linked the OpenID Connect identity (%s) to the existing "
             "account %r.", subject_id, authname)
         return authname
+
+    @staticmethod
+    def _account_exists_error(authname):
+        return AccountLinkError(_(
+            "An account named '%(authname)s' already exists in Trac, "
+            "but your OpenID Connect identity could not be linked to "
+            "it. Please contact an administrator for assistance.",
+            authname=authname))
 
     def _email_matches(self, id_token, authname):
         """ Check that the email address of the identity matches the one
@@ -551,7 +612,11 @@ class UserDatabase(Component):
                 "account %r: the email address of the identity (%s) does "
                 "not match the email address of the account (%s).",
                 authname, email, account_email)
-            return False
+            raise EmailMismatchError(_(
+                "The account you are logging into has a misaligned email "
+                "address between what is known to Trac, and what is "
+                "configurd within our OIDC provider.  Please contact an "
+                "administrator for assistance"))
         return True
 
     def find_session_by_oidc_subject(self, iss, sub):
