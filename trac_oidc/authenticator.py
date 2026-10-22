@@ -14,12 +14,13 @@ from __future__ import absolute_import
 
 import base64
 from functools import partial
+import ipaddress
 import json
 import logging
 import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import quote, urlencode, urlsplit
+from urllib.request import build_opener, HTTPRedirectHandler, Request
 
 from trac.core import TracError
 from trac.util import hex_entropy
@@ -50,6 +51,65 @@ class AuthenticationError(TracError):
     An error occurred during authentication.
 
     """
+
+
+def _is_loopback(host):
+    """Return whether *host* refers to the local machine."""
+    if not host:
+        return False
+    if host.lower() == 'localhost':
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _require_secure_url(url, description):
+    """Require *url* to use HTTPS (or plain HTTP on loopback).
+
+    Provider endpoints are contacted with the authorization code, the
+    client secret and the resulting tokens.  Requiring TLS keeps those
+    off the wire in clear text.  Loopback is exempted to allow for
+    local development and for the test suite.
+    """
+    try:
+        parts = urlsplit(url)
+        hostname = parts.hostname
+    except ValueError:
+        raise AuthenticationError("Invalid %s URL: %r" % (description, url))
+    if not parts.netloc:
+        raise AuthenticationError("Invalid %s URL: %r" % (description, url))
+    scheme = parts.scheme.lower()
+    if scheme == 'https':
+        return
+    if scheme == 'http' and _is_loopback(hostname):
+        return
+    raise AuthenticationError(
+        "%s must use an https:// URL (got %r)" % (description, url))
+
+
+class _RedirectRefused(HTTPRedirectHandler):
+    """Refuse to follow HTTP redirects.
+
+    Provider endpoints are fixed URLs.  Following a redirect could
+    re-send the authorization code and, on a 307/308, the client secret
+    (and for the userinfo endpoint, the bearer token) to another host.
+    Fail closed instead.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise AuthenticationError(
+            "Refusing to follow an HTTP redirect from %s to %s"
+            % (req.full_url, newurl))
+
+
+_opener = build_opener(_RedirectRefused())
+
+
+def urlopen(request, timeout=10):
+    """Open *request*, refusing to follow HTTP redirects."""
+    return _opener.open(request, timeout=timeout)
 
 
 def _http_request(url, data=None, headers=None, timeout=10):
@@ -109,6 +169,7 @@ def discover(issuer, timeout=10):
     """Fetch and cache an OpenID Connect discovery document."""
     issuer = issuer.rstrip('/')
     if issuer not in _discovery_cache:
+        _require_secure_url(issuer, "OIDC issuer")
         url = issuer + '/.well-known/openid-configuration'
         document = _json_response(
             url, headers={'Accept': 'application/json'}, timeout=timeout)
@@ -117,6 +178,20 @@ def discover(issuer, timeout=10):
             raise AuthenticationError(
                 "OpenID discovery document at %s is missing required "
                 "endpoints" % url)
+        discovered_issuer = document.get('issuer')
+        if not discovered_issuer:
+            raise AuthenticationError(
+                "OpenID discovery document at %s does not declare an "
+                "'issuer'" % url)
+        if _normalize_issuer(discovered_issuer) != _normalize_issuer(issuer):
+            raise AuthenticationError(
+                "OpenID discovery document at %s declares issuer %r, "
+                "expected %r" % (url, discovered_issuer, issuer))
+        for key in ('authorization_endpoint', 'token_endpoint',
+                    'userinfo_endpoint'):
+            endpoint = document.get(key)
+            if endpoint:
+                _require_secure_url(endpoint, "OIDC %s" % key)
         _discovery_cache[issuer] = document
     return _discovery_cache[issuer]
 
@@ -174,10 +249,14 @@ def decode_id_token(token):
     """Decode the claims from a JWT id_token.
 
     The signature is not verified here.  The token is obtained directly
-    from the provider's token endpoint over TLS using the client
-    credentials, which is the trust model used by the previous
-    oauth2client-based implementation.  Issuer, audience, expiry and
-    nonce claims are validated by :class:`Authenticator`.
+    from the provider's token endpoint over a TLS connection
+    authenticated with the client credentials.  OpenID Connect Core
+    3.1.3.7 permits TLS server validation in place of signature
+    validation for tokens received directly from the token endpoint.
+    This module enforces that trust boundary: provider endpoints must
+    use HTTPS and HTTP redirects are refused.  Issuer, audience,
+    authorized-party, expiry and nonce claims are validated by
+    :class:`Authenticator`.
     """
     try:
         header, payload, signature = token.split('.')
@@ -218,6 +297,14 @@ class Authenticator(object):
             raise TracError(
                 "Either an OIDC issuer or both the authorization and token "
                 "endpoints must be configured")
+        if issuer:
+            _require_secure_url(issuer, "OIDC issuer")
+        for url, description in (
+                (authorization_endpoint, "OIDC authorization endpoint"),
+                (token_endpoint, "OIDC token endpoint"),
+                (userinfo_endpoint, "OIDC userinfo endpoint")):
+            if url:
+                _require_secure_url(url, description)
         if token_auth_method not in ('client_secret_post',
                                      'client_secret_basic',
                                      'none'):
@@ -403,20 +490,41 @@ class Authenticator(object):
     def _validate_claims(self, claims):
         """Validate the security-relevant claims in an id_token."""
         now = time.time()
-        try:
-            expires = float(claims.get('exp'))
-        except (TypeError, ValueError):
-            expires = None
-        if expires is not None and now > expires + 60:
-            raise AuthenticationError("id_token has expired")
+        leeway = 60
 
+        issuer = claims.get('iss')
+        if not issuer:
+            raise AuthenticationError("id_token has no 'iss' claim")
         if self.issuer:
             expected = _normalize_issuer(self.issuer)
-            actual = _normalize_issuer(claims.get('iss'))
+            actual = _normalize_issuer(issuer)
             if actual != expected:
                 raise AuthenticationError(
                     "id_token was issued by %r, expected %r"
-                    % (claims.get('iss'), self.issuer))
+                    % (issuer, self.issuer))
+
+        try:
+            expires = float(claims['exp'])
+        except (KeyError, TypeError, ValueError):
+            raise AuthenticationError("id_token has no valid 'exp' claim")
+        if now > expires + leeway:
+            raise AuthenticationError("id_token has expired")
+
+        # Reject tokens which are not valid yet (or were issued in the
+        # future).  Both claims are optional, but must be sane when
+        # present.
+        for claim in ('iat', 'nbf'):
+            value = claims.get(claim)
+            if value is None:
+                continue
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                raise AuthenticationError(
+                    "id_token has an invalid '%s' claim" % claim)
+            if value > now + leeway:
+                raise AuthenticationError(
+                    "id_token '%s' claim is in the future" % claim)
 
         audience = claims.get('aud')
         if audience is None:
@@ -426,6 +534,14 @@ class Authenticator(object):
         if self.client_id not in audience:
             raise AuthenticationError(
                 "id_token is not intended for this client")
+
+        azp = claims.get('azp')
+        if len(audience) > 1 and azp is None:
+            raise AuthenticationError(
+                "id_token has multiple audiences but no 'azp' claim")
+        if azp is not None and azp != self.client_id:
+            raise AuthenticationError(
+                "id_token was authorized for a different party")
 
     def _get_userinfo(self, access_token, subject=None):
         """Get profile claims from the OIDC userinfo endpoint."""

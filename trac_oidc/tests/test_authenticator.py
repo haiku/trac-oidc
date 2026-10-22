@@ -101,6 +101,47 @@ class TestAuthenticatorInit(object):
                 issuer=ISSUER,
                 token_auth_method='magic')
 
+    def test_requires_https_issuer(self, redirect_url):
+        from ..authenticator import Authenticator, AuthenticationError
+        with pytest.raises(AuthenticationError):
+            Authenticator(redirect_url, 'CLIENT',
+                          issuer='http://keycloak.example.com/realms/trac')
+
+    def test_requires_https_endpoints(self, redirect_url):
+        from ..authenticator import Authenticator, AuthenticationError
+        with pytest.raises(AuthenticationError):
+            Authenticator(
+                redirect_url, 'CLIENT',
+                authorization_endpoint='http://keycloak.example.com/auth',
+                token_endpoint='https://keycloak.example.com/token')
+        with pytest.raises(AuthenticationError):
+            Authenticator(
+                redirect_url, 'CLIENT',
+                authorization_endpoint='https://keycloak.example.com/auth',
+                token_endpoint='http://keycloak.example.com/token')
+
+    def test_allows_http_on_loopback(self, redirect_url):
+        from ..authenticator import Authenticator
+        auth = Authenticator(
+            redirect_url, 'CLIENT',
+            authorization_endpoint='http://127.0.0.1:8080/auth',
+            token_endpoint='http://localhost:8080/token',
+            userinfo_endpoint='http://[::1]:8080/userinfo')
+        assert auth.token_endpoint == 'http://localhost:8080/token'
+
+
+class TestProviderUrlSecurity(object):
+    def test_is_loopback_empty_host(self):
+        from ..authenticator import _is_loopback
+        assert not _is_loopback(None)
+        assert not _is_loopback('')
+
+    def test_rejects_malformed_urls(self):
+        from ..authenticator import AuthenticationError, _require_secure_url
+        for url in ('https:/no-host', 'http://[::1'):
+            with pytest.raises(AuthenticationError):
+                _require_secure_url(url, 'test URL')
+
 
 class TestAuthenticator(object):
     def test_get_auth_url(self, authenticator):
@@ -323,9 +364,46 @@ class TestAuthenticator(object):
                 valid_claims(exp=time.time() - 3600))
 
     def test_validate_claims_missing_exp(self, authenticator):
+        from ..authenticator import AuthenticationError
         claims = valid_claims()
         del claims['exp']
-        authenticator._validate_claims(claims)
+        with pytest.raises(AuthenticationError):
+            authenticator._validate_claims(claims)
+
+    def test_validate_claims_invalid_exp(self, authenticator):
+        from ..authenticator import AuthenticationError
+        with pytest.raises(AuthenticationError):
+            authenticator._validate_claims(valid_claims(exp='soon'))
+
+    def test_validate_claims_missing_issuer(self, authenticator):
+        from ..authenticator import AuthenticationError
+        claims = valid_claims()
+        del claims['iss']
+        with pytest.raises(AuthenticationError):
+            authenticator._validate_claims(claims)
+
+    def test_validate_claims_iat_in_future(self, authenticator):
+        from ..authenticator import AuthenticationError
+        with pytest.raises(AuthenticationError):
+            authenticator._validate_claims(
+                valid_claims(iat=time.time() + 3600))
+
+    def test_validate_claims_nbf_in_future(self, authenticator):
+        from ..authenticator import AuthenticationError
+        with pytest.raises(AuthenticationError):
+            authenticator._validate_claims(
+                valid_claims(nbf=time.time() + 3600))
+
+    def test_validate_claims_accepts_recent_iat_and_nbf(self, authenticator):
+        authenticator._validate_claims(
+            valid_claims(iat=time.time() - 5, nbf=time.time() - 5))
+
+    def test_validate_claims_invalid_iat_and_nbf(self, authenticator):
+        from ..authenticator import AuthenticationError
+        with pytest.raises(AuthenticationError):
+            authenticator._validate_claims(valid_claims(iat='soon'))
+        with pytest.raises(AuthenticationError):
+            authenticator._validate_claims(valid_claims(nbf='soon'))
 
     def test_validate_claims_wrong_issuer(self, authenticator):
         from ..authenticator import AuthenticationError
@@ -356,7 +434,23 @@ class TestAuthenticator(object):
 
     def test_validate_claims_audience_list(self, authenticator):
         authenticator._validate_claims(
-            valid_claims(aud=['OTHER', 'CLIENT']))
+            valid_claims(aud=['OTHER', 'CLIENT'], azp='CLIENT'))
+
+    def test_validate_claims_multiple_audiences_requires_azp(
+            self, authenticator):
+        from ..authenticator import AuthenticationError
+        with pytest.raises(AuthenticationError):
+            authenticator._validate_claims(
+                valid_claims(aud=['OTHER', 'CLIENT']))
+
+    def test_validate_claims_wrong_azp(self, authenticator):
+        from ..authenticator import AuthenticationError
+        with pytest.raises(AuthenticationError):
+            authenticator._validate_claims(
+                valid_claims(aud=['OTHER', 'CLIENT'], azp='OTHER'))
+        with pytest.raises(AuthenticationError):
+            authenticator._validate_claims(
+                valid_claims(aud='CLIENT', azp='OTHER'))
 
     def test_get_userinfo(self, authenticator, monkeypatch):
         from .. import authenticator as module
@@ -429,6 +523,7 @@ class TestDiscovery(object):
         from .. import authenticator as module
         from ..authenticator import Authenticator
         document = {
+            'issuer': ISSUER,
             'authorization_endpoint': 'https://keycloak.example.com/auth',
             'token_endpoint': 'https://keycloak.example.com/token',
             }
@@ -445,6 +540,45 @@ class TestDiscovery(object):
         from ..authenticator import Authenticator, AuthenticationError
         monkeypatch.setattr(module, '_json_response', mock.Mock(
             return_value={'issuer': ISSUER}))
+        auth = Authenticator(redirect_url, 'CLIENT', issuer=ISSUER)
+        with pytest.raises(AuthenticationError):
+            auth.authorization_endpoint
+
+    def test_discovery_issuer_mismatch(self, redirect_url, monkeypatch):
+        from .. import authenticator as module
+        from ..authenticator import Authenticator, AuthenticationError
+        monkeypatch.setattr(module, '_json_response', mock.Mock(
+            return_value={
+                'issuer': 'https://evil.example.com',
+                'authorization_endpoint': 'https://keycloak.example.com/auth',
+                'token_endpoint': 'https://keycloak.example.com/token',
+                }))
+        auth = Authenticator(redirect_url, 'CLIENT', issuer=ISSUER)
+        with pytest.raises(AuthenticationError):
+            auth.authorization_endpoint
+
+    def test_discovery_requires_issuer(self, redirect_url, monkeypatch):
+        from .. import authenticator as module
+        from ..authenticator import Authenticator, AuthenticationError
+        monkeypatch.setattr(module, '_json_response', mock.Mock(
+            return_value={
+                'authorization_endpoint': 'https://keycloak.example.com/auth',
+                'token_endpoint': 'https://keycloak.example.com/token',
+                }))
+        auth = Authenticator(redirect_url, 'CLIENT', issuer=ISSUER)
+        with pytest.raises(AuthenticationError):
+            auth.authorization_endpoint
+
+    def test_discovery_rejects_insecure_endpoint(self, redirect_url,
+                                                 monkeypatch):
+        from .. import authenticator as module
+        from ..authenticator import Authenticator, AuthenticationError
+        monkeypatch.setattr(module, '_json_response', mock.Mock(
+            return_value={
+                'issuer': ISSUER,
+                'authorization_endpoint': 'https://keycloak.example.com/auth',
+                'token_endpoint': 'http://keycloak.example.com/token',
+                }))
         auth = Authenticator(redirect_url, 'CLIENT', issuer=ISSUER)
         with pytest.raises(AuthenticationError):
             auth.authorization_endpoint
@@ -568,6 +702,17 @@ class TestHttpRequest(object):
             side_effect=OSError('network down')))
         with pytest.raises(AuthenticationError):
             module._http_request('https://example.com')
+
+    def test_refuses_redirects(self):
+        from .. import authenticator as module
+        from ..authenticator import AuthenticationError
+        handler = module._RedirectRefused()
+        req = mock.Mock(full_url='https://example.com/token')
+        with pytest.raises(AuthenticationError) as excinfo:
+            handler.redirect_request(
+                req, mock.Mock(), 307, 'Temporary Redirect', {},
+                'https://evil.example.com/token')
+        assert 'evil.example.com' in str(excinfo.value)
 
     def test_json_response_success(self, monkeypatch):
         from .. import authenticator as module

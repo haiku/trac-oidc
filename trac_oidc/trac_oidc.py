@@ -76,8 +76,9 @@ class OidcPlugin(Component):
         'trac_oidc', 'issuer', '',
         """The OpenID Connect issuer URL.  For Keycloak this is the realm
         URL, e.g. ``https://keycloak.example.com/realms/myrealm``.
-        When set, the provider's discovery document is used to find the
-        authorization, token and userinfo endpoints.""")
+        The URL must use ``https://``.  When set, the provider's
+        discovery document is used to find the authorization, token and
+        userinfo endpoints.""")
 
     client_id = Option(
         'trac_oidc', 'client_id', '',

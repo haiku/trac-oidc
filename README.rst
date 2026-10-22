@@ -183,6 +183,15 @@ their Keycloak username.
 
 .. note::
 
+   Provider endpoints must use ``https://``.  Plain ``http://`` is
+   accepted only for loopback addresses (``localhost``, ``127.0.0.1``
+   and ``::1``), which is useful for local development.  The plugin
+   also refuses to follow HTTP redirects from the provider, since a
+   redirected token request could disclose the client secret or tokens
+   to another host.
+
+.. note::
+
    The ``client_secret`` is stored in ``trac.ini`` in plain text.
    Restrict access to the ``conf`` directory accordingly.
 
