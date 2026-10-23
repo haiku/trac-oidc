@@ -57,6 +57,17 @@ class EmailMismatchError(AccountLinkError):
     """
 
 
+class UsernameCaseMismatchError(AccountLinkError):
+    """The username supplied by the OIDC provider matches an existing
+    Trac account only when upper/lower case is ignored.
+
+    Trac usernames are case-sensitive, so creating a new account would
+    silently produce a duplicate (for example ``zardshard`` alongside
+    ``Zardshard``).  The login is refused instead, so that an
+    administrator can align the two names.
+    """
+
+
 class OidcPlugin(Component):
     """ Authenticate via OpenID Connect
 
@@ -680,6 +691,11 @@ class UserDatabase(Component):
         error page is shown.  A duplicate account such as ``joe (2)`` is
         never created.
 
+        Account names are compared case-sensitively.  A username which
+        matches an existing account only when upper/lower case is ignored
+        is refused (rather than silently creating a duplicate), so that
+        an administrator can rename the account to match.
+
         In ``email`` mode the address is also synchronized on every
         subsequent login of an already-associated account.  If the
         address stored in Trac later changes and no longer matches the
@@ -717,6 +733,14 @@ class UserDatabase(Component):
         if self.env.config.getbool('trac', 'ignore_auth_case', False):
             return name.lower()
         return name
+
+    def _case_insensitive_matches(self, authname):
+        """Return existing sessions which match *authname* only when
+        case is ignored.
+
+        """
+        return [sid for sid in self.helper.find_sessions_by_name(authname)
+                if sid != authname]
 
     def find_session(self, id_token):
         """ Find existing authenticated session corresponding to identity.
@@ -771,6 +795,16 @@ class UserDatabase(Component):
                 "(%s): an account named %r already exists and the identity "
                 "could not be linked to it.", subject_id, preferred_username)
             raise self._account_exists_error(preferred_username)
+        case_matches = self._case_insensitive_matches(preferred_username)
+        if case_matches:
+            self.log.error(
+                "Not creating a new account for the OpenID Connect identity "
+                "(%s): the username %r matches the existing account(s) %s "
+                "case-insensitively.  Trac usernames are case-sensitive.",
+                subject_id, preferred_username,
+                ', '.join(map(repr, case_matches)))
+            raise self._username_case_mismatch_error(preferred_username,
+                                                     case_matches)
         attributes = {self.SUBJECT_SKEY: subject_id}
         attributes.update(self.default_attributes(id_token))
         authname = self.helper.create_session(preferred_username, attributes)
@@ -790,10 +824,12 @@ class UserDatabase(Component):
         Returns the authname of the account to which the identity was
         linked, or ``None`` if no account with a matching name exists.
 
-        Raises :class:`AccountLinkError` if an account with a matching
-        name exists but the identity cannot be linked to it.  (Creating a
-        new account in that case would silently produce a duplicate such
-        as ``joe (2)``.)
+        Raises :class:`UsernameCaseMismatchError` if the username
+        matches an existing account only when case is ignored, and
+        :class:`AccountLinkError` if an account with a matching name
+        exists but the identity cannot be linked to it.  (Creating a new
+        account in that case would silently produce a duplicate such as
+        ``joe (2)``.)
 
         """
         mode = (self.link_existing_accounts or 'no').strip().lower()
@@ -810,6 +846,17 @@ class UserDatabase(Component):
                 "Not linking the OpenID Connect identity to the account %r: "
                 "that name is reserved by trac.", authname)
             return None
+        if not self.helper.session_exists(authname):
+            case_matches = self._case_insensitive_matches(authname)
+            if case_matches:
+                self.log.error(
+                    "Not linking the OpenID Connect identity for %r: the "
+                    "username matches the existing account(s) %s "
+                    "case-insensitively.  Trac usernames are "
+                    "case-sensitive.", authname,
+                    ', '.join(map(repr, case_matches)))
+                raise self._username_case_mismatch_error(authname,
+                                                         case_matches)
         if not self.helper.account_exists(authname):
             # No account with that name exists (yet).
             return None
@@ -850,6 +897,18 @@ class UserDatabase(Component):
             "but your OpenID Connect identity could not be linked to "
             "it. Please contact an administrator for assistance.",
             authname=authname))
+
+    @staticmethod
+    def _username_case_mismatch_error(username, matches):
+        return UsernameCaseMismatchError(_(
+            "The username '%(username)s' supplied by your OpenID Connect "
+            "provider matches the existing Trac account(s) %(matches)s "
+            "except for upper/lower case. Trac usernames are "
+            "case-sensitive, so a new account was not created. Please "
+            "contact an administrator to rename the Trac account to "
+            "'%(username)s', or to change the username at your identity "
+            "provider.", username=username,
+            matches=', '.join(repr(match) for match in matches)))
 
     @staticmethod
     def _email_is_verified(id_token):
@@ -1046,6 +1105,22 @@ class SessionHelper(Component):
                         " ORDER BY session.last_visit DESC",
                         (1, attr_name, attr_value))
         return [row[0] for row in rows]
+
+    def find_sessions_by_name(self, authname):
+        """ Find authenticated sessions whose sid matches *authname*
+        case-insensitively.
+
+        Trac session ids are case-sensitive.  This is used to detect a
+        provider username which differs from an existing Trac account
+        name only in case.
+
+        """
+        folded = authname.casefold()
+        rows = db_query(self.env,
+                        "SELECT sid FROM session WHERE authenticated=%s",
+                        (1,))
+        return sorted(row[0] for row in rows
+                      if row[0].casefold() == folded)
 
     def session_exists(self, authname):
         """ Return True if an authenticated session with this sid exists.

@@ -22,7 +22,8 @@ from trac.web.session import DetachedSession
 
 from ..api import ILoginManager
 from ..authenticator import AuthenticationError, AuthenticationFailed
-from ..trac_oidc import AccountLinkError, EmailMismatchError
+from ..trac_oidc import (AccountLinkError, EmailMismatchError,
+                         UsernameCaseMismatchError)
 
 
 @pytest.fixture
@@ -787,6 +788,7 @@ class TestUserDatabase(object):
     @pytest.fixture
     def helper(self, userdb):
         userdb.helper = mock.Mock(name='UserDatabase.helper')
+        userdb.helper.find_sessions_by_name.return_value = []
         return userdb.helper
 
     def test_find_session(self, env, userdb):
@@ -1026,15 +1028,89 @@ class TestUserDatabase(object):
 
     def test_create_session_does_not_normalize_by_default(
             self, env, userdb, existing_account, ignore_auth_case):
-        """Without ``ignore_auth_case`` Trac treats ``joe`` and ``Joe``
-        as different users, so a separate session is still created.
+        """Without ``ignore_auth_case`` the provider's name is used as-is
+        (it is not lower-cased).
         """
         ignore_auth_case(False)
         id_token = {'iss': 'https://example.net', 'sub': '42',
-                    'preferred_username': 'Joe',
+                    'preferred_username': 'Joseph',
                     }
-        assert userdb.create_session(id_token) == 'Joe'
-        assert DetachedSession(env, 'Joe')['trac_oidc.subject'] == \
+        assert userdb.create_session(id_token) == 'Joseph'
+
+    @pytest.fixture
+    def mixed_case_account(self, env):
+        """A Trac account whose name differs from the SSO username only
+        in case.
+        """
+        ds = DetachedSession(env, 'Zardshard')
+        ds['name'] = 'Zardshard'
+        ds['email'] = 'zardshard@example.com'
+        ds.save()
+        return 'Zardshard'
+
+    @pytest.mark.parametrize('mode', ['no', 'name', 'email'])
+    def test_create_session_refuses_case_mismatch(
+            self, env, userdb, mixed_case_account, link_mode, mode):
+        """``zardshard`` must not create a duplicate of ``Zardshard``.
+
+        Trac usernames are case-sensitive, so the login is refused and
+        an administrator is asked to align the names.
+        """
+        link_mode(mode)
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'zardshard',
+                    'email': 'zardshard@example.com',
+                    'email_verified': True,
+                    }
+        with pytest.raises(UsernameCaseMismatchError) as excinfo:
+            userdb.create_session(id_token)
+        assert "'Zardshard'" in str(excinfo.value)
+        assert 'case-sensitive' in str(excinfo.value)
+        assert 'trac_oidc.subject' not in DetachedSession(env, 'zardshard')
+        assert 'trac_oidc.subject' not in DetachedSession(env, 'Zardshard')
+
+    def test_link_session_refuses_case_mismatch(
+            self, env, userdb, mixed_case_account, link_mode):
+        link_mode('email')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'zardshard',
+                    'email': 'zardshard@example.com',
+                    'email_verified': True,
+                    }
+        with pytest.raises(UsernameCaseMismatchError) as excinfo:
+            userdb.link_session(id_token)
+        assert "'Zardshard'" in str(excinfo.value)
+        assert 'trac_oidc.subject' not in DetachedSession(env, 'Zardshard')
+
+    def test_case_mismatch_is_ambiguous(self, env, userdb, link_mode):
+        link_mode('name')
+        for sid in ('Zardshard', 'ZARDSHARD'):
+            ds = DetachedSession(env, sid)
+            ds['name'] = sid
+            ds.save()
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'zardshard',
+                    }
+        with pytest.raises(UsernameCaseMismatchError) as excinfo:
+            userdb.link_session(id_token)
+        assert "'ZARDSHARD'" in str(excinfo.value)
+        assert "'Zardshard'" in str(excinfo.value)
+
+    def test_link_session_after_case_is_aligned(self, env, userdb,
+                                                link_mode):
+        """After the administrator renames the account, linking works."""
+        link_mode('email')
+        ds = DetachedSession(env, 'zardshard')
+        ds['name'] = 'Zardshard'
+        ds['email'] = 'zardshard@example.com'
+        ds.save()
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'zardshard',
+                    'email': 'zardshard@example.com',
+                    'email_verified': True,
+                    }
+        assert userdb.link_session(id_token) == 'zardshard'
+        assert DetachedSession(env, 'zardshard')['trac_oidc.subject'] == \
             'https://example.net?sub=42'
 
     def test_link_session_by_name_case_insensitive(

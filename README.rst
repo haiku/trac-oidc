@@ -268,7 +268,13 @@ For example::
 Some further details:
 
 * The name of the account must be *identical* to the username
-  supplied by the provider.  The comparison is case-sensitive.
+  supplied by the provider.  The comparison is case-sensitive.  If the
+  provider's username matches an existing Trac account only when
+  upper/lower case is ignored (for example ``zardshard`` versus
+  ``Zardshard``), the login is refused with an error page instead of
+  creating a duplicate account.  An administrator can then use the
+  **Rename Trac User** panel to rename the account (or the provider's
+  username) so that the two match exactly.
 
 * An account which is already associated with a *different* OpenID
   Connect identity is never linked to.  The login fails with an error
@@ -316,7 +322,10 @@ The **Admin → TracOIDC → Rename Trac User** panel renames a Trac login.
 Enter the *Current Username* and the *New Username* and submit the form.
 The user's session data, permissions, tickets, ticket history, attachments,
 wiki edits, reports, component ownership, notification subscriptions and
-authentication cookies are updated to the new name.
+authentication cookies are updated to the new name.  This is also the way
+to resolve a case-only mismatch between a Trac username and the username
+supplied by the identity provider (for example ``Zardshard`` versus
+``zardshard``).
 
 *****************************
 Migration from TracAuthOpenId
