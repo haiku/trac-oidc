@@ -314,6 +314,42 @@ def test_link_existing_account_email_mismatch(test_app, env, id_token,
     assert get_accounts_for_subject(env, subject) == []
 
 
+def test_link_existing_account_email_bound_to_other_username(
+        test_app, env, id_token, link_existing_accounts):
+    # An identity whose verified email address is bound to a differently
+    # named Trac account must be refused, not turned into a duplicate.
+    trac_username = 'zero-%s' % id_token['sub']
+    sso_username = 'zeroshard-%s' % id_token['sub']
+    ds = DetachedSession(env, trac_username)
+    ds['name'] = 'Zero'
+    ds['email'] = 'zero@example.org'
+    ds.save()
+
+    id_token.update({
+        'preferred_username': sso_username,
+        'email': 'zero@example.org',
+        'email_verified': True,
+        'name': 'Zero',
+        })
+
+    link_existing_accounts('email')
+
+    resp = test_app.get('/prefs')
+    resp = resp.click('^Login .* OpenID Connect$', extra_environ={
+        'HTTP_REFERER': resp.request.url,
+        })
+    resp = test_app.get(oauth_redirect_url(resp.location), expect_errors=True)
+    assert resp.status_int == 500
+    assert 'already bound to the existing Trac account' in resp.text
+    assert 'align your accounts' in resp.text
+    # No account was associated with the identity, and no duplicate
+    # account was created.
+    subject = 'https://example.net?sub=%s' % id_token['sub']
+    assert get_accounts_for_subject(env, subject) == []
+    assert not env.db_query(
+        "SELECT sid FROM session WHERE sid=%s", (sso_username,))
+
+
 def test_linked_account_email_updated(test_app, env, id_token,
                                       link_existing_accounts):
     # An identity which is already associated with a Trac account is

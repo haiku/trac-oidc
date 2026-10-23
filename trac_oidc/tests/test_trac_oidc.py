@@ -22,8 +22,8 @@ from trac.web.session import DetachedSession
 
 from ..api import ILoginManager
 from ..authenticator import AuthenticationError, AuthenticationFailed
-from ..trac_oidc import (AccountLinkError, EmailMismatchError,
-                         UsernameCaseMismatchError)
+from ..trac_oidc import (AccountLinkError, EmailBoundToAnotherAccountError,
+                         EmailMismatchError, UsernameCaseMismatchError)
 
 
 @pytest.fixture
@@ -962,6 +962,7 @@ class TestUserDatabase(object):
     def helper(self, userdb):
         userdb.helper = mock.Mock(name='UserDatabase.helper')
         userdb.helper.find_sessions_by_name.return_value = []
+        userdb.helper.find_sessions_by_email.return_value = []
         return userdb.helper
 
     def test_find_session(self, env, userdb):
@@ -1285,6 +1286,117 @@ class TestUserDatabase(object):
         assert userdb.link_session(id_token) == 'zardshard'
         assert DetachedSession(env, 'zardshard')['trac_oidc.subject'] == \
             'https://example.net?sub=42'
+
+    @pytest.fixture
+    def account_with_email(self, env):
+        """An existing account whose name differs from the SSO username."""
+        ds = DetachedSession(env, 'Zero')
+        ds['name'] = 'Zero'
+        ds['email'] = 'zero@example.com'
+        ds.save()
+        return 'Zero'
+
+    def test_link_session_refuses_email_bound_to_other_username(
+            self, env, userdb, account_with_email, link_mode):
+        link_mode('email')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'zeroshard',
+                    'email': 'zero@example.com',
+                    'email_verified': True,
+                    }
+        with pytest.raises(EmailBoundToAnotherAccountError) as excinfo:
+            userdb.link_session(id_token)
+        assert "'Zero'" in str(excinfo.value)
+        assert "'zeroshard'" in str(excinfo.value)
+        assert 'align your accounts' in str(excinfo.value)
+        assert 'trac_oidc.subject' not in DetachedSession(env, 'Zero')
+        assert not env.db_query(
+            "SELECT sid FROM session WHERE sid=%s", ('zeroshard',))
+
+    def test_create_session_refuses_email_bound_to_other_username(
+            self, env, userdb, account_with_email, link_mode):
+        link_mode('no')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'zeroshard',
+                    'email': 'zero@example.com',
+                    'email_verified': True,
+                    }
+        with pytest.raises(EmailBoundToAnotherAccountError):
+            userdb.create_session(id_token)
+        assert not env.db_query(
+            "SELECT sid FROM session WHERE sid=%s", ('zeroshard',))
+
+    @pytest.mark.parametrize('email_verified', [False, 'false', 0, None])
+    def test_email_bound_detection_requires_verified_email(
+            self, env, userdb, account_with_email, link_mode,
+            email_verified):
+        link_mode('no')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'zeroshard',
+                    'email': 'zero@example.com',
+                    'email_verified': email_verified,
+                    }
+        # The unverified address is not trusted, so a new account is
+        # created (as before).
+        assert userdb.create_session(id_token) == 'zeroshard'
+
+    @pytest.mark.parametrize('email', [None, '', '   '])
+    def test_email_bound_detection_without_email(
+            self, env, userdb, account_with_email, link_mode, email):
+        link_mode('no')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'zeroshard',
+                    'email_verified': True,
+                    }
+        if email is not None:
+            id_token['email'] = email
+        assert userdb.create_session(id_token) == 'zeroshard'
+
+    def test_email_bound_detection_is_case_insensitive(
+            self, env, userdb, account_with_email, link_mode):
+        link_mode('no')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'zeroshard',
+                    'email': 'ZERO@Example.COM',
+                    'email_verified': True,
+                    }
+        with pytest.raises(EmailBoundToAnotherAccountError):
+            userdb.create_session(id_token)
+
+    def test_email_bound_detection_ignores_exact_username(
+            self, env, userdb, account_with_email, link_mode):
+        link_mode('email')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'Zero',
+                    'email': 'zero@example.com',
+                    'email_verified': True,
+                    }
+        # An exact match follows the normal linking rules.
+        assert userdb.link_session(id_token) == 'Zero'
+        assert DetachedSession(env, 'Zero')['trac_oidc.subject'] == \
+            'https://example.net?sub=42'
+
+    def test_email_bound_detection_lists_multiple_accounts(
+            self, env, userdb, link_mode):
+        for sid in ('Zero', 'ZeroOld'):
+            ds = DetachedSession(env, sid)
+            ds['email'] = 'zero@example.com'
+            ds.save()
+        # An account with an empty email address must be ignored.
+        ds = DetachedSession(env, 'NoEmail')
+        ds['email'] = ''
+        ds.save()
+
+        link_mode('no')
+        id_token = {'iss': 'https://example.net', 'sub': '42',
+                    'preferred_username': 'zeroshard',
+                    'email': 'zero@example.com',
+                    'email_verified': True,
+                    }
+        with pytest.raises(EmailBoundToAnotherAccountError) as excinfo:
+            userdb.link_session(id_token)
+        assert "'Zero'" in str(excinfo.value)
+        assert "'ZeroOld'" in str(excinfo.value)
 
     def test_link_session_by_name_case_insensitive(
             self, env, userdb, existing_account, link_mode,

@@ -278,6 +278,15 @@ Some further details:
   already created by an earlier version, delete it with the **Delete
   User** panel first.
 
+* If no account with the supplied name exists, but the provider asserts
+  a *verified* email address which is already bound to a differently
+  named Trac account, the login is refused with an error page as well.
+  This prevents a duplicate account when the SSO username and the Trac
+  username differ (for example ``zeroshard`` versus ``Zero``).  An
+  administrator can then align the accounts by renaming one of them or
+  correcting the stored email address.  The identity is never linked
+  automatically in this case, since that could be an account takeover.
+
 * An account which is already associated with a *different* OpenID
   Connect identity is never linked to.  The login fails with an error
   page instead.

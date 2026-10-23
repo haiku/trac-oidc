@@ -68,6 +68,17 @@ class UsernameCaseMismatchError(AccountLinkError):
     """
 
 
+class EmailBoundToAnotherAccountError(AccountLinkError):
+    """The verified email address supplied by the OIDC provider is
+    already bound to a different Trac username.
+
+    Creating a new account would produce a duplicate, and automatically
+    linking the identity to the existing account could be an account
+    takeover.  The login is refused so that an administrator can align
+    the two accounts.
+    """
+
+
 class OidcPlugin(Component):
     """ Authenticate via OpenID Connect
 
@@ -835,6 +846,15 @@ class UserDatabase(Component):
         is refused (rather than silently creating a duplicate), so that
         an administrator can rename the account to match.
 
+        If no account with the supplied name exists, but the identity's
+        verified email address is already bound to a differently-named
+        Trac account, the login is also refused.  This prevents a
+        duplicate account from being created when the identity provider
+        and Trac use different usernames for the same person (for
+        example, SSO ``zeroshard`` and Trac ``Zero``).  The identity is
+        not linked automatically, since that could be an account
+        takeover.
+
         In ``email`` mode the address is also synchronized on every
         subsequent login of an already-associated account.  If the
         address stored in Trac later changes and no longer matches the
@@ -879,6 +899,20 @@ class UserDatabase(Component):
 
         """
         return [sid for sid in self.helper.find_sessions_by_name(authname)
+                if sid != authname]
+
+    def _other_accounts_with_email(self, id_token, authname):
+        """Return existing accounts, other than *authname*, whose email
+        address matches the verified email of the identity.
+
+        """
+        email = id_token.get('email')
+        if not email or not self._email_is_verified(id_token):
+            return []
+        email = email.strip()
+        if not email:
+            return []
+        return [sid for sid in self.helper.find_sessions_by_email(email)
                 if sid != authname]
 
     def find_session(self, id_token):
@@ -944,6 +978,17 @@ class UserDatabase(Component):
                 ', '.join(map(repr, case_matches)))
             raise self._username_case_mismatch_error(preferred_username,
                                                      case_matches)
+        email_matches = self._other_accounts_with_email(
+            id_token, preferred_username)
+        if email_matches:
+            self.log.error(
+                "Not creating a new account for the OpenID Connect identity "
+                "(%s): the verified email address %r is bound to the "
+                "existing account(s) %s.", subject_id, id_token.get('email'),
+                ', '.join(map(repr, email_matches)))
+            raise self._email_bound_error(preferred_username,
+                                          id_token.get('email'),
+                                          email_matches)
         attributes = {self.SUBJECT_SKEY: subject_id}
         attributes.update(self.default_attributes(id_token))
         authname = self.helper.create_session(preferred_username, attributes)
@@ -964,8 +1009,10 @@ class UserDatabase(Component):
         linked, or ``None`` if no account with a matching name exists.
 
         Raises :class:`UsernameCaseMismatchError` if the username
-        matches an existing account only when case is ignored, and
-        :class:`AccountLinkError` if an account with a matching name
+        matches an existing account only when case is ignored,
+        :class:`EmailBoundToAnotherAccountError` if the identity's
+        verified email address is bound to a differently-named account,
+        and :class:`AccountLinkError` if an account with a matching name
         exists but the identity cannot be linked to it.  (Creating a new
         account in that case would silently produce a duplicate such as
         ``joe (2)``.)
@@ -997,6 +1044,17 @@ class UserDatabase(Component):
                 raise self._username_case_mismatch_error(authname,
                                                          case_matches)
         if not self.helper.account_exists(authname):
+            email_matches = self._other_accounts_with_email(id_token,
+                                                            authname)
+            if email_matches:
+                self.log.error(
+                    "Not linking the OpenID Connect identity for %r: the "
+                    "verified email address %r is bound to the existing "
+                    "account(s) %s.", authname, id_token.get('email'),
+                    ', '.join(map(repr, email_matches)))
+                raise self._email_bound_error(authname,
+                                              id_token.get('email'),
+                                              email_matches)
             # No account with that name exists (yet).
             return None
 
@@ -1048,6 +1106,16 @@ class UserDatabase(Component):
             "'%(username)s', or to change the username at your identity "
             "provider.", username=username,
             matches=', '.join(repr(match) for match in matches)))
+
+    @staticmethod
+    def _email_bound_error(username, email, accounts):
+        return EmailBoundToAnotherAccountError(_(
+            "The email address '%(email)s' supplied by your OpenID Connect "
+            "provider is already bound to the existing Trac account(s) "
+            "%(accounts)s, which do not match the username '%(username)s'. "
+            "Please contact an administrator to help you align your "
+            "accounts.", username=username, email=email,
+            accounts=', '.join(repr(account) for account in accounts)))
 
     @staticmethod
     def _email_is_verified(id_token):
@@ -1260,6 +1328,22 @@ class SessionHelper(Component):
                         (1,))
         return sorted(row[0] for row in rows
                       if row[0].casefold() == folded)
+
+    def find_sessions_by_email(self, email):
+        """ Find authenticated sessions whose email address matches
+        *email* case-insensitively.
+
+        """
+        folded = email.strip().casefold()
+        rows = db_query(self.env,
+                        "SELECT session.sid, attr.value"
+                        " FROM session"
+                        " INNER JOIN session_attribute AS attr"
+                        "                  USING(sid, authenticated)"
+                        " WHERE session.authenticated=%s AND attr.name=%s",
+                        (1, 'email'))
+        return sorted(sid for sid, value in rows
+                      if value and value.strip().casefold() == folded)
 
     def session_exists(self, authname):
         """ Return True if an authenticated session with this sid exists.
