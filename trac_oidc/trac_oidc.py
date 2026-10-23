@@ -402,6 +402,9 @@ class TracOidcAdminPanel(Component):
         if 'TRAC_ADMIN' in req.perm('admin', 'trac_oidc/list'):
             yield ('trac_oidc', _("TracOIDC"), 'list',
                    _("List Users"))
+        if 'TRAC_ADMIN' in req.perm('admin', 'trac_oidc/duplicates'):
+            yield ('trac_oidc', _("TracOIDC"), 'duplicates',
+                   _("Duplicate Report"))
 
     def render_admin_panel(self, req, cat, page, path_info):
         req.perm(cat, page).require('TRAC_ADMIN')
@@ -414,6 +417,8 @@ class TracOidcAdminPanel(Component):
             return self._render_delete(req, cat, page)
         if page == 'list':
             return self._render_list(req, cat, page)
+        if page == 'duplicates':
+            return self._render_duplicates(req, cat, page)
 
         username = ''
         new_email = ''
@@ -606,6 +611,60 @@ class TracOidcAdminPanel(Component):
             'users': user_list,
             'user_count': len(user_list),
             }
+
+    def _render_duplicates(self, req, cat, page):
+        emails = {}
+        for sid, value in db_query(
+                self.env,
+                "SELECT sid, value FROM session_attribute"
+                " WHERE authenticated=%s AND name=%s",
+                (1, 'email')):
+            emails[sid] = (value or '').strip()
+
+        accounts = [
+            {'username': sid, 'email': emails.get(sid, '')}
+            for (sid,) in db_query(self.env,
+                                   "SELECT sid FROM session"
+                                   " WHERE authenticated=%s", (1,))
+            ]
+
+        return 'admin_trac_oidc_duplicates.html', {
+            'duplicate_usernames': self._find_duplicate_groups(
+                accounts,
+                key=lambda account: account['username'].casefold(),
+                display=lambda account: account['username']),
+            'duplicate_emails': self._find_duplicate_groups(
+                accounts,
+                key=lambda account: account['email'].casefold(),
+                display=lambda account: account['email'],
+                skip_empty=True),
+            }
+
+    @staticmethod
+    def _find_duplicate_groups(accounts, key, display, skip_empty=False):
+        """Group *accounts* by a case-insensitive key.
+
+        Returns the groups with more than one member, sorted by key.
+        Each group is a dictionary with the displayed key and the
+        matching accounts.
+        """
+        groups = {}
+        for account in accounts:
+            group_key = key(account)
+            if skip_empty and not group_key:
+                continue
+            groups.setdefault(group_key, []).append(account)
+
+        duplicates = []
+        for members in groups.values():
+            if len(members) < 2:
+                continue
+            members.sort(key=lambda account: account['username'].casefold())
+            duplicates.append({
+                'key': display(members[0]),
+                'accounts': members,
+                })
+        return sorted(duplicates, key=lambda group: group['key'].casefold())
 
     def _normalize_username(self, username):
         if self.env.config.getbool('trac', 'ignore_auth_case', False):

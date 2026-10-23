@@ -618,3 +618,43 @@ def test_admin_list_users(test_app, env, id_token):
         assert cells == [username, 'list@example.org', '1', '1', 'Yes']
     finally:
         permissions.revoke_permission('anonymous', 'TRAC_ADMIN')
+
+
+def test_admin_duplicate_report(test_app, env, id_token):
+    permissions = PermissionSystem(env)
+    base = 'dup-user-%s' % id_token['sub']
+    username1 = base
+    username2 = base.upper()
+    username3 = '%s-other' % base
+    email1 = 'dup-%s@Example.org' % id_token['sub']
+    email2 = 'dup-%s@example.org' % id_token['sub']
+    permissions.grant_permission('anonymous', 'TRAC_ADMIN')
+    try:
+        ds = DetachedSession(env, username1)
+        ds['email'] = email1
+        ds.save()
+        ds = DetachedSession(env, username2)
+        ds['email'] = 'other-%s@example.org' % id_token['sub']
+        ds.save()
+        ds = DetachedSession(env, username3)
+        ds['email'] = email2
+        ds.save()
+
+        resp = test_app.get('/admin/trac_oidc/duplicates')
+        assert resp.status_int == 200
+        assert 'Duplicate Report' in resp.text
+        assert 'Duplicate Usernames' in resp.text
+        assert 'Duplicate Email Addresses' in resp.text
+
+        username_table = resp.html.find('table', id='duplicate-usernames')
+        username_text = username_table.get_text()
+        assert username1 in username_text
+        assert username2 in username_text
+
+        email_table = resp.html.find('table', id='duplicate-emails')
+        email_text = email_table.get_text()
+        assert username1 in email_text
+        assert username3 in email_text
+        assert username2 not in email_text
+    finally:
+        permissions.revoke_permission('anonymous', 'TRAC_ADMIN')

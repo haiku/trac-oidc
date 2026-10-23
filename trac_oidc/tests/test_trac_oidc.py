@@ -445,6 +445,8 @@ class TestTracOidcAdminPanel(object):
              'Delete User'),
             ('trac_oidc', 'TracOIDC', 'list',
              'List Users'),
+            ('trac_oidc', 'TracOIDC', 'duplicates',
+             'Duplicate Report'),
             ]
 
     def test_render_admin_panel(self, panel, admin_req):
@@ -507,6 +509,8 @@ class TestTracOidcAdminPanel(object):
             os.path.join(templates_dir, 'admin_trac_oidc_delete.html'))
         assert os.path.isfile(
             os.path.join(templates_dir, 'admin_trac_oidc_list.html'))
+        assert os.path.isfile(
+            os.path.join(templates_dir, 'admin_trac_oidc_duplicates.html'))
 
     def test_get_htdocs_dirs(self, panel):
         assert panel.get_htdocs_dirs() == []
@@ -969,6 +973,45 @@ class TestTracOidcAdminPanel(object):
         assert users['dave'] == {
             'username': 'dave', 'email': 'dave@example.org',
             'tickets': 0, 'comments': 0, 'sso': 'Yes'}
+
+    def test_render_duplicates(self, env, panel, admin_req):
+        def add_user(sid, email=None):
+            ds = DetachedSession(env, sid)
+            if email is not None:
+                ds['email'] = email
+            ds.save()
+
+        add_user('alice', 'Alice@Example.org')
+        add_user('Alice', 'alice@example.org')
+        add_user('bob', ' ALICE@example.org ')
+        add_user('carol')
+        add_user('dave', '')
+        add_user('unique', 'unique@example.org')
+
+        template, data = panel.render_admin_panel(
+            admin_req, 'trac_oidc', 'duplicates', None)
+
+        assert template == 'admin_trac_oidc_duplicates.html'
+
+        [username_group] = data['duplicate_usernames']
+        assert username_group['key'].casefold() == 'alice'
+        assert sorted(account['username']
+                      for account in username_group['accounts']) == \
+            ['Alice', 'alice']
+
+        [email_group] = data['duplicate_emails']
+        assert email_group['key'].casefold() == 'alice@example.org'
+        assert sorted(account['username']
+                      for account in email_group['accounts']) == \
+            ['Alice', 'alice', 'bob']
+
+    def test_render_duplicates_none(self, panel, admin_req):
+        template, data = panel.render_admin_panel(
+            admin_req, 'trac_oidc', 'duplicates', None)
+
+        assert template == 'admin_trac_oidc_duplicates.html'
+        assert data == {'duplicate_usernames': [],
+                        'duplicate_emails': []}
 
     def test_remove_from_cc_list(self, panel):
         assert panel._remove_from_cc_list('', 'joe') == ''

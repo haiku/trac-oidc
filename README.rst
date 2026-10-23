@@ -360,6 +360,16 @@ an SSO identity linkage (``Yes`` for a TracOIDC subject, ``Legacy`` for an
 old TracAuthOpenId identity URL, and ``No`` otherwise).  The list is not
 paginated.
 
+The **Admin → TracOIDC → Duplicate Report** panel lists Trac accounts
+which share a username or an email address.  Both comparisons are
+case-insensitive, so ``Zardshard`` and ``zardshard`` are reported as a
+duplicate username, and ``Joe@Example.org`` and ``joe@example.org`` are
+reported as a duplicate email address.  Only accounts with an
+authenticated session are included, and accounts without an email address
+are ignored by the email comparison.  This report is useful for finding
+duplicate accounts (for example ``joe (2)``) that should be unlinked,
+renamed or deleted.
+
 *****************************
 Migration from TracAuthOpenId
 *****************************

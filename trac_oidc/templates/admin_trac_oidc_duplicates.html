@@ -1,0 +1,81 @@
+# extends 'admin.html'
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>
+      # block admintitle
+      ${_("Duplicate Report")}
+      # endblock admintitle
+    </title>
+  </head>
+
+  <body>
+    # block adminpanel
+    <h2>${_("Duplicate Report")}</h2>
+
+    <p class="hint">
+      ${_("Usernames and email addresses are compared case-insensitively. Only Trac accounts with an authenticated session are listed. Accounts without an email address are ignored by the email comparison.")}
+    </p>
+
+    <h3>${_("Duplicate Usernames")}</h3>
+
+    # if duplicate_usernames
+    <table class="listing" id="duplicate-usernames">
+      <thead>
+        <tr>
+          <th>${_("Username")}</th>
+          <th>${_("Email")}</th>
+        </tr>
+      </thead>
+      <tbody>
+        # for group in duplicate_usernames
+        <tr class="duplicate-group">
+          <td colspan="2">
+            <strong>${group['key']}</strong>
+          </td>
+        </tr>
+        # for account in group['accounts']
+        <tr>
+          <td>${account['username']}</td>
+          <td>${account['email'] or '-'}</td>
+        </tr>
+        # endfor
+        # endfor
+      </tbody>
+    </table>
+    # else
+    <p>${_("No duplicate usernames found.")}</p>
+    # endif
+
+    <h3>${_("Duplicate Email Addresses")}</h3>
+
+    # if duplicate_emails
+    <table class="listing" id="duplicate-emails">
+      <thead>
+        <tr>
+          <th>${_("Email")}</th>
+          <th>${_("Username")}</th>
+        </tr>
+      </thead>
+      <tbody>
+        # for group in duplicate_emails
+        <tr class="duplicate-group">
+          <td colspan="2">
+            <strong>${group['key']}</strong>
+          </td>
+        </tr>
+        # for account in group['accounts']
+        <tr>
+          <td>${account['email']}</td>
+          <td>${account['username']}</td>
+        </tr>
+        # endfor
+        # endfor
+      </tbody>
+    </table>
+    # else
+    <p>${_("No duplicate email addresses found.")}</p>
+    # endif
+    # endblock adminpanel
+  </body>
+</html>
