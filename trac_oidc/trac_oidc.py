@@ -399,6 +399,9 @@ class TracOidcAdminPanel(Component):
         if 'TRAC_ADMIN' in req.perm('admin', 'trac_oidc/delete'):
             yield ('trac_oidc', _("TracOIDC"), 'delete',
                    _("Delete User"))
+        if 'TRAC_ADMIN' in req.perm('admin', 'trac_oidc/list'):
+            yield ('trac_oidc', _("TracOIDC"), 'list',
+                   _("List Users"))
 
     def render_admin_panel(self, req, cat, page, path_info):
         req.perm(cat, page).require('TRAC_ADMIN')
@@ -409,6 +412,8 @@ class TracOidcAdminPanel(Component):
             return self._render_rename(req, cat, page)
         if page == 'delete':
             return self._render_delete(req, cat, page)
+        if page == 'list':
+            return self._render_list(req, cat, page)
 
         username = ''
         new_email = ''
@@ -552,6 +557,55 @@ class TracOidcAdminPanel(Component):
                 req.redirect(req.href.admin(cat, page))
 
         return 'admin_trac_oidc_delete.html', {'username': username}
+
+    def _render_list(self, req, cat, page):
+        users = {}
+        for (sid,) in db_query(self.env,
+                               "SELECT sid FROM session"
+                               " WHERE authenticated=%s", (1,)):
+            users[sid] = {'username': sid, 'email': '', 'tickets': 0,
+                          'comments': 0, 'sso': 'No'}
+
+        for sid, name, value in db_query(
+                self.env,
+                "SELECT sid, name, value FROM session_attribute"
+                " WHERE authenticated=%s AND name IN (%s, %s, %s)",
+                (1, 'email', UserDatabase.SUBJECT_SKEY,
+                 UserDatabase.IDENTITY_URL_SKEY)):
+            user = users.get(sid)
+            if user is None:
+                continue
+            if name == 'email':
+                user['email'] = value or ''
+            elif name == UserDatabase.SUBJECT_SKEY and value:
+                user['sso'] = 'Yes'
+            elif name == UserDatabase.IDENTITY_URL_SKEY and value \
+                    and user['sso'] == 'No':
+                user['sso'] = 'Legacy'
+
+        for reporter, count in db_query(
+                self.env,
+                "SELECT reporter, COUNT(*) FROM ticket"
+                " WHERE reporter IS NOT NULL GROUP BY reporter", ()):
+            user = users.get(reporter)
+            if user is not None:
+                user['tickets'] = count
+
+        for author, count in db_query(
+                self.env,
+                "SELECT author, COUNT(*) FROM ticket_change"
+                " WHERE field=%s AND author IS NOT NULL GROUP BY author",
+                ('comment',)):
+            user = users.get(author)
+            if user is not None:
+                user['comments'] = count
+
+        user_list = sorted(users.values(),
+                           key=lambda user: user['username'].casefold())
+        return 'admin_trac_oidc_list.html', {
+            'users': user_list,
+            'user_count': len(user_list),
+            }
 
     def _normalize_username(self, username):
         if self.env.config.getbool('trac', 'ignore_auth_case', False):

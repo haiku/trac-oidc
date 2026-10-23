@@ -584,3 +584,37 @@ def test_admin_delete_user(test_app, env, id_token):
             " AND action='TICKET_VIEW'", (username,))
     finally:
         permissions.revoke_permission('anonymous', 'TRAC_ADMIN')
+
+
+def test_admin_list_users(test_app, env, id_token):
+    permissions = PermissionSystem(env)
+    username = 'list-user-%s' % id_token['sub']
+    permissions.grant_permission('anonymous', 'TRAC_ADMIN')
+    try:
+        ds = DetachedSession(env, username)
+        ds['name'] = 'List Test'
+        ds['email'] = 'list@example.org'
+        ds['trac_oidc.subject'] = 'https://example.net?sub=%s' \
+            % id_token['sub']
+        ds.save()
+        with env.db_transaction as db:
+            db("INSERT INTO ticket (reporter) VALUES (%s)", (username,))
+            [ticket_id] = [row[0] for row in env.db_query(
+                "SELECT id FROM ticket WHERE reporter=%s", (username,))]
+            db("INSERT INTO ticket_change"
+               " (ticket, time, author, field, oldvalue, newvalue)"
+               " VALUES (%s, %s, %s, %s, %s, %s)",
+               (ticket_id, 1, username, 'comment', '', ''))
+
+        resp = test_app.get('/admin/trac_oidc/list')
+        assert resp.status_int == 200
+        assert 'List Users' in resp.text
+        assert 'Total:' in resp.text
+
+        rows = [row for row in resp.html.find_all('tr')
+                if username in row.get_text()]
+        assert len(rows) == 1
+        cells = [td.get_text(strip=True) for td in rows[0].find_all('td')]
+        assert cells == [username, 'list@example.org', '1', '1', 'Yes']
+    finally:
+        permissions.revoke_permission('anonymous', 'TRAC_ADMIN')

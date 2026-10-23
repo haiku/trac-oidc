@@ -443,6 +443,8 @@ class TestTracOidcAdminPanel(object):
              'Rename Trac User'),
             ('trac_oidc', 'TracOIDC', 'delete',
              'Delete User'),
+            ('trac_oidc', 'TracOIDC', 'list',
+             'List Users'),
             ]
 
     def test_render_admin_panel(self, panel, admin_req):
@@ -503,6 +505,8 @@ class TestTracOidcAdminPanel(object):
             os.path.join(templates_dir, 'admin_trac_oidc_rename.html'))
         assert os.path.isfile(
             os.path.join(templates_dir, 'admin_trac_oidc_delete.html'))
+        assert os.path.isfile(
+            os.path.join(templates_dir, 'admin_trac_oidc_list.html'))
 
     def test_get_htdocs_dirs(self, panel):
         assert panel.get_htdocs_dirs() == []
@@ -902,6 +906,69 @@ class TestTracOidcAdminPanel(object):
         assert DetachedSession(env, 'Zardshard').sid == 'Zardshard'
         assert not env.db_query(
             "SELECT sid FROM session WHERE sid=%s", ('zardshard',))
+
+    def test_render_list(self, env, panel, admin_req):
+        def add_user(sid, email=None, subject=None, legacy=None):
+            ds = DetachedSession(env, sid)
+            if email is not None:
+                ds['email'] = email
+            if subject is not None:
+                ds['trac_oidc.subject'] = subject
+            if legacy is not None:
+                ds['openid_session_identity_url_data'] = legacy
+            ds.save()
+
+        add_user('alice', 'alice@example.org',
+                 subject='https://example.net?sub=1')
+        add_user('bob', 'bob@example.org',
+                 legacy='https://example.org/old')
+        add_user('carol')
+        add_user('dave', 'dave@example.org',
+                 subject='https://example.net?sub=4',
+                 legacy='https://example.org/old-dave')
+
+        with env.db_transaction as db:
+            for ticket_id, reporter in ((1, 'alice'), (2, 'alice'),
+                                        (3, 'bob'), (4, 'nobody')):
+                db("INSERT INTO ticket (id, reporter) VALUES (%s, %s)",
+                   (ticket_id, reporter))
+            for ticket, time, author, field in (
+                    (1, 1, 'alice', 'comment'),
+                    (1, 2, 'alice', 'comment'),
+                    (1, 3, 'bob', 'comment'),
+                    (1, 4, 'alice', 'status'),
+                    (2, 5, 'carol', 'comment'),
+                    (2, 6, 'nobody', 'comment')):
+                db("INSERT INTO ticket_change"
+                   " (ticket, time, author, field, oldvalue, newvalue)"
+                   " VALUES (%s, %s, %s, %s, %s, %s)",
+                   (ticket, time, author, field, '', ''))
+            # An attribute without a corresponding session row is ignored.
+            db("INSERT INTO session_attribute"
+               " (sid, authenticated, name, value)"
+               " VALUES (%s, %s, %s, %s)",
+               ('ghost', 1, 'email', 'ghost@example.org'))
+
+        template, data = panel.render_admin_panel(
+            admin_req, 'trac_oidc', 'list', None)
+
+        assert template == 'admin_trac_oidc_list.html'
+        assert data['user_count'] == 4
+        users = {user['username']: user for user in data['users']}
+        assert [user['username'] for user in data['users']] == \
+            ['alice', 'bob', 'carol', 'dave']
+        assert users['alice'] == {
+            'username': 'alice', 'email': 'alice@example.org',
+            'tickets': 2, 'comments': 2, 'sso': 'Yes'}
+        assert users['bob'] == {
+            'username': 'bob', 'email': 'bob@example.org',
+            'tickets': 1, 'comments': 1, 'sso': 'Legacy'}
+        assert users['carol'] == {
+            'username': 'carol', 'email': '', 'tickets': 0,
+            'comments': 1, 'sso': 'No'}
+        assert users['dave'] == {
+            'username': 'dave', 'email': 'dave@example.org',
+            'tickets': 0, 'comments': 0, 'sso': 'Yes'}
 
     def test_remove_from_cc_list(self, panel):
         assert panel._remove_from_cc_list('', 'joe') == ''

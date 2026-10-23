@@ -353,6 +353,13 @@ removing a duplicate account created before case-only username
 mismatches were rejected: delete the duplicate first, then rename the
 original account to match the provider's username.
 
+The **Admin → TracOIDC → List Users** panel gives an overview of every
+Trac user: their username, email address, the number of tickets they
+reported and ticket comments they authored, and whether their account has
+an SSO identity linkage (``Yes`` for a TracOIDC subject, ``Legacy`` for an
+old TracAuthOpenId identity URL, and ``No`` otherwise).  The list is not
+paginated.
+
 *****************************
 Migration from TracAuthOpenId
 *****************************
