@@ -274,7 +274,9 @@ Some further details:
   ``Zardshard``), the login is refused with an error page instead of
   creating a duplicate account.  An administrator can then use the
   **Rename Trac User** panel to rename the account (or the provider's
-  username) so that the two match exactly.
+  username) so that the two match exactly.  If a duplicate account was
+  already created by an earlier version, delete it with the **Delete
+  User** panel first.
 
 * An account which is already associated with a *different* OpenID
   Connect identity is never linked to.  The login fails with an error
@@ -326,6 +328,21 @@ authentication cookies are updated to the new name.  This is also the way
 to resolve a case-only mismatch between a Trac username and the username
 supplied by the identity provider (for example ``Zardshard`` versus
 ``zardshard``).
+
+The **Admin → TracOIDC → Delete User** panel permanently erases a Trac
+user.  Tickets, ticket comments, attachments, wiki pages, reports and
+component ownership belonging to the user are reassigned to ``nobody``,
+and the user is removed from ticket CC lists.  The user's session,
+profile attributes, permissions, notification subscriptions and
+authentication cookies are erased.  **This action cannot be undone.**
+The panel refuses to delete the account currently used by the
+administrator.
+
+The username is case-sensitive.  Enter it exactly as it appears in Trac;
+``zardshard`` and ``Zardshard`` are different users.  This is useful for
+removing a duplicate account created before case-only username
+mismatches were rejected: delete the duplicate first, then rename the
+original account to match the provider's username.
 
 *****************************
 Migration from TracAuthOpenId

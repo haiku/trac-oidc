@@ -1,0 +1,52 @@
+# extends 'admin.html'
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>
+      # block admintitle
+      ${_("Delete User")}
+      # endblock admintitle
+    </title>
+  </head>
+
+  <body>
+    # block adminpanel
+    <h2>${_("Delete User")}</h2>
+
+    <div class="system-message">
+      <p class="system-message-title">
+        ${_("Warning: this action is permanent and cannot be undone.")}
+      </p>
+      <p>
+        ${_("Tickets, ticket comments, attachments, wiki pages, reports and component ownership belonging to the user are reassigned to 'nobody'. The user is removed from ticket CC lists. The user's account, profile attributes, permissions, notification subscriptions and login sessions are erased.")}
+      </p>
+      <p>
+        ${_("Trac usernames are case-sensitive: 'Zardshard' and 'zardshard' are different users. Enter the username exactly as it appears in Trac.")}
+      </p>
+    </div>
+
+    <form class="mod" id="modoidcdelete" method="post"
+          action="${req.request_path}">
+      ${jmacros.form_token_input()}
+      <fieldset>
+        <legend>${_("Delete a Trac user")}</legend>
+        <div class="field">
+          <label>${_("Username (case-sensitive):")}<br />
+            <input type="text" name="username" size="48"
+                   value="${username}" />
+          </label>
+        </div>
+        <div class="field">
+          <label>
+            <input type="checkbox" name="confirm" value="1" />
+            ${_("I understand that this action is permanent and cannot be undone.")}
+          </label>
+        </div>
+      </fieldset>
+      <div class="buttons">
+        <input type="submit" value="${_('Delete User')}" />
+      </div>
+    </form>
+    # endblock adminpanel
+  </body>
+</html>

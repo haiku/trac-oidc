@@ -510,3 +510,41 @@ def test_admin_rename_user(test_app, env, id_token):
             " AND action='TICKET_VIEW'", (new_username,))
     finally:
         permissions.revoke_permission('anonymous', 'TRAC_ADMIN')
+
+
+def test_admin_delete_user(test_app, env, id_token):
+    permissions = PermissionSystem(env)
+    username = 'delete-user-%s' % id_token['sub']
+    permissions.grant_permission('anonymous', 'TRAC_ADMIN')
+    try:
+        ds = DetachedSession(env, username)
+        ds['name'] = 'Delete Test'
+        ds['email'] = 'delete@example.org'
+        ds['trac_oidc.subject'] = 'https://example.net?sub=%s' \
+            % id_token['sub']
+        ds.save()
+        PermissionSystem(env).grant_permission(username, 'TICKET_VIEW')
+
+        resp = test_app.get('/admin/trac_oidc/delete')
+        assert resp.status_int == 200
+        assert 'Delete User' in resp.text
+        assert 'cannot be undone' in resp.text
+        assert 'case-sensitive' in resp.text
+
+        form = resp.forms['modoidcdelete']
+        assert form['username'].value == ''
+        form['username'] = username
+        form['confirm'].checked = True
+        resp = form.submit().follow()
+        assert resp.status_int == 200
+        assert "Trac user '%s' has been deleted" % username in resp.text
+
+        assert not env.db_query(
+            "SELECT sid FROM session WHERE sid=%s", (username,))
+        assert not env.db_query(
+            "SELECT sid FROM session_attribute WHERE sid=%s", (username,))
+        assert not env.db_query(
+            "SELECT username FROM permission WHERE username=%s"
+            " AND action='TICKET_VIEW'", (username,))
+    finally:
+        permissions.revoke_permission('anonymous', 'TRAC_ADMIN')

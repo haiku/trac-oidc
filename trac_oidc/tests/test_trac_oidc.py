@@ -441,6 +441,8 @@ class TestTracOidcAdminPanel(object):
              'Unlink SSO Identity'),
             ('trac_oidc', 'TracOIDC', 'rename',
              'Rename Trac User'),
+            ('trac_oidc', 'TracOIDC', 'delete',
+             'Delete User'),
             ]
 
     def test_render_admin_panel(self, panel, admin_req):
@@ -499,6 +501,8 @@ class TestTracOidcAdminPanel(object):
             os.path.join(templates_dir, 'admin_trac_oidc_unlink.html'))
         assert os.path.isfile(
             os.path.join(templates_dir, 'admin_trac_oidc_rename.html'))
+        assert os.path.isfile(
+            os.path.join(templates_dir, 'admin_trac_oidc_delete.html'))
 
     def test_get_htdocs_dirs(self, panel):
         assert panel.get_htdocs_dirs() == []
@@ -738,6 +742,175 @@ class TestTracOidcAdminPanel(object):
         assert panel._replace_in_cc_list('', 'joe', 'joseph') == ''
         assert panel._replace_in_cc_list('nobody', 'joe', 'joseph') == \
             'nobody'
+
+    def test_render_delete(self, panel, admin_req):
+        template, data = panel.render_admin_panel(
+            admin_req, 'trac_oidc', 'delete', None)
+        assert template == 'admin_trac_oidc_delete.html'
+        assert data == {'username': ''}
+
+    def test_render_delete_deletes_user(self, env, panel, admin_req):
+        username = 'joe'
+        ds = DetachedSession(env, username)
+        ds['name'] = 'Joe'
+        ds['email'] = 'joe@example.org'
+        ds['trac_oidc.subject'] = 'https://example.net?sub=42'
+        ds.save()
+        PermissionSystem(env).grant_permission(username, 'TICKET_VIEW')
+        with env.db_transaction as db:
+            db("INSERT INTO auth_cookie (cookie, name, ipnr, time)"
+               " VALUES (%s, %s, %s, %s)",
+               ('cookie1', username, '127.0.0.1', 0))
+            db("INSERT INTO ticket (id, owner, reporter, cc)"
+               " VALUES (%s, %s, %s, %s)",
+               (1, username, username,
+                '%s, other@example.org' % username))
+            db("INSERT INTO ticket (id, owner, reporter, cc)"
+               " VALUES (%s, %s, %s, %s)",
+               (2, 'nobody', 'nobody', 'nobody'))
+            db("INSERT INTO ticket_change"
+               " (ticket, time, author, field, oldvalue, newvalue)"
+               " VALUES (%s, %s, %s, %s, %s, %s)",
+               (1, 1, username, 'owner', '', username))
+            db("INSERT INTO ticket_change"
+               " (ticket, time, author, field, oldvalue, newvalue)"
+               " VALUES (%s, %s, %s, %s, %s, %s)",
+               (1, 2, username, 'cc',
+                '%s, other@example.org' % username, username))
+            db("INSERT INTO ticket_change"
+               " (ticket, time, author, field, oldvalue, newvalue)"
+               " VALUES (%s, %s, %s, %s, %s, %s)",
+               (2, 3, 'nobody', 'owner', 'nobody', 'nobody'))
+            db("INSERT INTO attachment"
+               " (type, id, filename, size, time, description, author)"
+               " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+               ('ticket', '1', 'file.txt', 1, 0, '', username))
+            db("INSERT INTO wiki"
+               " (name, version, time, author, text, comment, readonly)"
+               " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+               ('WikiStart', 1, 0, username, '', '', 0))
+            db("INSERT INTO report (author, title, query, description)"
+               " VALUES (%s, %s, %s, %s)",
+               (username, 'Report', 'SELECT 1', ''))
+            db("INSERT INTO component (name, owner, description)"
+               " VALUES (%s, %s, %s)",
+               ('component1', username, ''))
+            db("INSERT INTO notify_watch"
+               " (sid, authenticated, class, realm, target)"
+               " VALUES (%s, %s, %s, %s, %s)",
+               (username, 1, 'Ticket', 'ticket', '1'))
+            db("INSERT INTO notify_subscription"
+               " (time, changetime, class, sid, authenticated, distributor,"
+               "  format, priority, adverb)"
+               " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+               (0, 0, 'Ticket', username, 1, 'email', 'text/plain', 1,
+                'always'))
+
+        admin_req.environ['REQUEST_METHOD'] = 'POST'
+        admin_req.args = {'username': ' joe ', 'confirm': '1'}
+        template, data = panel.render_admin_panel(
+            admin_req, 'trac_oidc', 'delete', None)
+
+        assert template == 'admin_trac_oidc_delete.html'
+        assert data == {'username': username}
+        assert admin_req.redirect.mock_calls == [
+            mock.call(admin_req.href.admin('trac_oidc', 'delete')),
+            ]
+        assert "Trac user 'joe' has been deleted" \
+            in admin_req.chrome['notices'][0]
+
+        # The account and its profile are gone.
+        assert not env.db_query(
+            "SELECT sid FROM session WHERE sid=%s", (username,))
+        assert not env.db_query(
+            "SELECT sid FROM session_attribute WHERE sid=%s", (username,))
+        assert not env.db_query(
+            "SELECT username FROM permission WHERE username=%s", (username,))
+        assert not env.db_query(
+            "SELECT name FROM auth_cookie WHERE name=%s", (username,))
+        assert not env.db_query(
+            "SELECT sid FROM notify_watch WHERE sid=%s", (username,))
+        assert not env.db_query(
+            "SELECT sid FROM notify_subscription WHERE sid=%s", (username,))
+        # The permission cache must have been invalidated.
+        assert not [p for p in PermissionSystem(env).get_all_permissions()
+                    if p[0] == username]
+
+        def values(sql, args=()):
+            return [row[0] for row in env.db_query(sql, args)]
+
+        # Authored/owned content is reassigned to nobody.
+        assert values("SELECT owner FROM ticket WHERE id=1") == ['nobody']
+        assert values("SELECT reporter FROM ticket WHERE id=1") == ['nobody']
+        assert values("SELECT cc FROM ticket WHERE id=1") == \
+            ['other@example.org']
+        assert values("SELECT cc FROM ticket WHERE id=2") == ['nobody']
+        assert values("SELECT author FROM ticket_change"
+                      " WHERE ticket=1 AND time=1") == ['nobody']
+        assert values("SELECT newvalue FROM ticket_change"
+                      " WHERE ticket=1 AND time=1 AND field='owner'") == \
+            ['nobody']
+        assert values("SELECT oldvalue FROM ticket_change"
+                      " WHERE ticket=1 AND time=2 AND field='cc'") == \
+            ['other@example.org']
+        assert values("SELECT newvalue FROM ticket_change"
+                      " WHERE ticket=1 AND time=2 AND field='cc'") == ['']
+        assert values("SELECT author FROM attachment"
+                      " WHERE filename='file.txt'") == ['nobody']
+        assert values("SELECT author FROM wiki WHERE name='WikiStart'") == \
+            ['nobody']
+        assert values("SELECT author FROM report WHERE title='Report'") == \
+            ['nobody']
+        assert values("SELECT owner FROM component"
+                      " WHERE name='component1'") == ['nobody']
+
+    @pytest.mark.parametrize('username, confirm, warning', [
+        ('', '1', 'Username is required.'),
+        ('joe', '', 'confirm that you understand'),
+        ('anonymous', '1', 'reserved by Trac'),
+        ('nobody', '1', 'reserved by Trac'),
+        ('nonsense', '1', 'does not exist'),
+        ('admin', '1', 'currently logged in'),
+        ])
+    def test_render_delete_validation(self, env, panel, admin_req,
+                                      username, confirm, warning):
+        ds = DetachedSession(env, 'joe')
+        ds['name'] = 'Joe'
+        ds.save()
+
+        admin_req.environ['REQUEST_METHOD'] = 'POST'
+        admin_req.args = {'username': username, 'confirm': confirm}
+        template, data = panel.render_admin_panel(
+            admin_req, 'trac_oidc', 'delete', None)
+
+        assert warning in admin_req.chrome['warnings'][0]
+        assert not admin_req.redirect.called
+        assert DetachedSession(env, 'joe').sid == 'joe'
+
+    def test_render_delete_is_case_sensitive(self, env, panel, admin_req):
+        ds = DetachedSession(env, 'Zardshard')
+        ds['name'] = 'Zardshard'
+        ds.save()
+
+        admin_req.environ['REQUEST_METHOD'] = 'POST'
+        admin_req.args = {'username': 'zardshard', 'confirm': '1'}
+        template, data = panel.render_admin_panel(
+            admin_req, 'trac_oidc', 'delete', None)
+
+        assert 'case-sensitive' in admin_req.chrome['warnings'][0]
+        assert not admin_req.redirect.called
+        assert DetachedSession(env, 'Zardshard').sid == 'Zardshard'
+        assert not env.db_query(
+            "SELECT sid FROM session WHERE sid=%s", ('zardshard',))
+
+    def test_remove_from_cc_list(self, panel):
+        assert panel._remove_from_cc_list('', 'joe') == ''
+        assert panel._remove_from_cc_list('other', 'joe') == 'other'
+        assert panel._remove_from_cc_list('joe, other', 'joe') == 'other'
+        assert panel._delete_change_value('cc', '', 'joe') == ''
+        assert panel._delete_change_value('cc', 'joe', 'joe') == ''
+        assert panel._delete_change_value('owner', 'joe', 'joe') == 'nobody'
+        assert panel._delete_change_value('owner', 'other', 'joe') == 'other'
 
 
 class TestAuthCookieManager(object):

@@ -385,6 +385,9 @@ class TracOidcAdminPanel(Component):
         if 'TRAC_ADMIN' in req.perm('admin', 'trac_oidc/rename'):
             yield ('trac_oidc', _("TracOIDC"), 'rename',
                    _("Rename Trac User"))
+        if 'TRAC_ADMIN' in req.perm('admin', 'trac_oidc/delete'):
+            yield ('trac_oidc', _("TracOIDC"), 'delete',
+                   _("Delete User"))
 
     def render_admin_panel(self, req, cat, page, path_info):
         req.perm(cat, page).require('TRAC_ADMIN')
@@ -393,6 +396,8 @@ class TracOidcAdminPanel(Component):
             return self._render_unlink(req, cat, page)
         if page == 'rename':
             return self._render_rename(req, cat, page)
+        if page == 'delete':
+            return self._render_delete(req, cat, page)
 
         username = ''
         new_email = ''
@@ -499,6 +504,44 @@ class TracOidcAdminPanel(Component):
             'new_username': new_username,
             }
 
+    def _render_delete(self, req, cat, page):
+        username = ''
+        if req.method == 'POST':
+            # Trac usernames are case-sensitive, so the name must be
+            # used exactly as entered.  Do not normalize it.
+            username = (req.args.get('username') or '').strip()
+            if not username:
+                add_warning(req, _("Username is required."))
+            elif req.args.get('confirm') != '1':
+                add_warning(req, _(
+                    "You must confirm that you understand the deletion "
+                    "cannot be undone."))
+            elif username in UserDatabase.RESERVED_AUTHNAMES \
+                    or username == 'nobody':
+                add_warning(req, _(
+                    "User '%(username)s' is reserved by Trac and cannot be "
+                    "deleted.", username=username))
+            elif username == req.authname:
+                add_warning(req, _(
+                    "You cannot delete the account you are currently logged "
+                    "in as."))
+            elif not self.helper.session_exists(username):
+                add_warning(req, _(
+                    "User '%(username)s' does not exist. Trac usernames are "
+                    "case-sensitive; check the spelling and capitalization.",
+                    username=username))
+            else:
+                self._delete_user(username)
+                self.log.info(
+                    "Administrator %s deleted the Trac user %r",
+                    req.authname, username)
+                add_notice(req, _(
+                    "Trac user '%(username)s' has been deleted. This action "
+                    "cannot be undone.", username=username))
+                req.redirect(req.href.admin(cat, page))
+
+        return 'admin_trac_oidc_delete.html', {'username': username}
+
     def _normalize_username(self, username):
         if self.env.config.getbool('trac', 'ignore_auth_case', False):
             return username.lower()
@@ -542,6 +585,21 @@ class TracOidcAdminPanel(Component):
             self._rename_ticket_cc(db, old_username, new_username)
             self._rename_ticket_change_values(db, old_username, new_username)
         self.env.invalidate_known_users_cache()
+        self._invalidate_permission_cache()
+
+    def _invalidate_permission_cache(self):
+        """Drop the permission store's cached copy of the permission table.
+
+        The administration panels modify the ``permission`` table directly,
+        bypassing ``PermissionSystem.grant_permission()`` and
+        ``revoke_permission()``, which normally invalidate it.
+        """
+        permissions = PermissionSystem(self.env)
+        try:
+            del permissions.store._all_permissions
+        except AttributeError:  # pragma: NO COVER - alternative store
+            pass
+        permissions.permission_cache.clear()
 
     def _rename_ticket_cc(self, db, old_username, new_username):
         for ticket_id, cc in db(
@@ -587,6 +645,87 @@ class TracOidcAdminPanel(Component):
         return ', '.join(
             new_username if user == old_username else user
             for user in users)
+
+    def _delete_user(self, username):
+        """Erase a Trac user from the database.
+
+        Everything the user authored or owned is reassigned to
+        ``nobody``, and the user is removed from ticket CC lists.  The
+        user's session, attributes, permissions, notification
+        subscriptions and authentication cookies are then deleted.
+        """
+        tables = set(DatabaseManager(self.env).get_table_names())
+        with self.env.db_transaction as db:
+            db("UPDATE ticket SET owner=%s WHERE owner=%s",
+               ('nobody', username))
+            db("UPDATE ticket SET reporter=%s WHERE reporter=%s",
+               ('nobody', username))
+            db("UPDATE ticket_change SET author=%s WHERE author=%s",
+               ('nobody', username))
+            db("UPDATE attachment SET author=%s WHERE author=%s",
+               ('nobody', username))
+            db("UPDATE wiki SET author=%s WHERE author=%s",
+               ('nobody', username))
+            db("UPDATE report SET author=%s WHERE author=%s",
+               ('nobody', username))
+            db("UPDATE component SET owner=%s WHERE owner=%s",
+               ('nobody', username))
+            self._delete_ticket_cc(db, username)
+            self._delete_ticket_change_values(db, username)
+            if 'notify_watch' in tables:
+                db("DELETE FROM notify_watch"
+                   " WHERE sid=%s AND authenticated=1", (username,))
+            if 'notify_subscription' in tables:
+                db("DELETE FROM notify_subscription"
+                   " WHERE sid=%s AND authenticated=1", (username,))
+            # Erase the account itself.
+            db("DELETE FROM session_attribute WHERE sid=%s", (username,))
+            db("DELETE FROM session WHERE sid=%s", (username,))
+            db("DELETE FROM permission WHERE username=%s", (username,))
+            db("DELETE FROM auth_cookie WHERE name=%s", (username,))
+        self.env.invalidate_known_users_cache()
+        self._invalidate_permission_cache()
+
+    def _delete_ticket_cc(self, db, username):
+        for ticket_id, cc in db(
+                "SELECT id, cc FROM ticket"
+                " WHERE cc IS NOT NULL AND cc<>''"):
+            new_cc = self._remove_from_cc_list(cc, username)
+            if new_cc != cc:
+                db("UPDATE ticket SET cc=%s WHERE id=%s",
+                   (new_cc, ticket_id))
+
+    def _delete_ticket_change_values(self, db, username):
+        for ticket, time, field, oldvalue, newvalue in db(
+                "SELECT ticket, time, field, oldvalue, newvalue"
+                " FROM ticket_change"
+                " WHERE field IN ('owner', 'reporter', 'cc')"):
+            new_oldvalue = self._delete_change_value(
+                field, oldvalue, username)
+            new_newvalue = self._delete_change_value(
+                field, newvalue, username)
+            if (new_oldvalue, new_newvalue) != (oldvalue, newvalue):
+                db("UPDATE ticket_change SET oldvalue=%s, newvalue=%s"
+                   " WHERE ticket=%s AND time=%s AND field=%s",
+                   (new_oldvalue, new_newvalue, ticket, time, field))
+
+    @classmethod
+    def _delete_change_value(cls, field, value, username):
+        if not value:
+            return value
+        if field in ('owner', 'reporter'):
+            return 'nobody' if value == username else value
+        # The caller only passes 'cc' here.
+        return cls._remove_from_cc_list(value, username)
+
+    @staticmethod
+    def _remove_from_cc_list(value, username):
+        if not value:
+            return value
+        users = [user.strip() for user in value.split(',')]
+        if username not in users:
+            return value
+        return ', '.join(user for user in users if user != username)
 
     # ITemplateProvider methods
 
