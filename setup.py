@@ -6,7 +6,7 @@ import os
 
 from setuptools import setup
 
-VERSION = '0.2.1.dev0'
+VERSION = '0.2.2.dev0'
 
 here = os.path.abspath(os.path.dirname(__file__))
 with open(os.path.join(here, 'README.rst'), encoding='utf-8') as fp:
